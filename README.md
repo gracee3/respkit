@@ -228,3 +228,39 @@ python -m examples.run_rename_proposal batch /path/to/files --max-concurrency 8 
 ```
 
 Start with `2` or `4`, then increase cautiously and monitor local endpoint stability.
+
+## Performance Notes (sample200, March 15 2026)
+
+Observed one pass on a 200-file live corpus:
+
+- Baseline `sample200_run1`: long tail persisted in review with max concurrent review of `1`.
+- Tuned `sample200_run2`: `--max-concurrency 8 --review --review-max-concurrency 8 --provider-timeout 30`.
+
+### Comparison (`sample200_run1` vs `sample200_run2`)
+
+| Metric | `sample200_run1` | `sample200_run2` |
+| --- | ---: | ---: |
+| wall-clock (manifest span) | `00:15:55` | `00:07:24` |
+| wall-clock (`/usr/bin/time real`) | `~16:00` (from batch run) | `7m30.65s` |
+| proposal rows | 200 | 200 |
+| proposal success | 197 | 194 |
+| proposal provider_error | 3 | 6 |
+| review rows | 197 | 194 |
+| review success | 196 | 194 |
+| review provider_error | 1 | 0 |
+| estimated timeout-like errors (provider_error) | 3 proposal / 1 review | 6 proposal / 0 review |
+| review tail span | `11m58s` | `3m11s` |
+| quality (`review` decision) | pass 171, fail 24, uncertain 1, no decision 1 | pass 170, fail 23, uncertain 1 |
+
+Net effect:
+- review tail reduced by ~73%
+- end-to-end wall-clock reduced by ~53%
+- counts/quality stayed broadly stable; actor attribution remains the main non-pass failure category.
+
+### Hygiene for future benchmark runs
+
+- Keep output roots fresh per run (`.respkit_runs/live_corpus_01/sample200_runX`).
+- Capture both `batch_summary.json` and `manifest.jsonl` before comparing results.
+- Prefer `--review-max-concurrency` > `1` with the same artifact behavior to verify serialized tails are removed.
+- Capture provider timeout rate separately from review failure rate (`provider_error` strings containing `timeout`).
+- Record a small review decision breakdown (`pass` / `fail` / `uncertain`) from manifest rows.

@@ -194,6 +194,17 @@ This first iteration keeps behavior explicit and avoids framework-heavy patterns
 
 ## Troubleshooting local endpoints
 
-- If the response parser never captures fields, lower temperature and ensure the endpoint is using `response_format` with `json_schema`.
+- If the response parser never captures fields, lower temperature and ensure the endpoint is returning clean JSON.
+- If the endpoint logs warnings about unsupported request fields, confirm `response_format` is not sent to `/v1/responses` and that the model is returning text that parses as JSON.
 - If runs fail with request errors, inspect `provider_request.json` and `raw_response.json` for URL mismatches (`/v1/responses` vs `/responses`), headers, and payload shape.
 - If runs return `validation_failed` on every file, inspect `validation_report.json` to see whether the issue is provider parse failure, schema mismatch, or task validators.
+
+## Concurrency notes
+
+Run directory batches with bounded concurrency:
+
+```bash
+python -m examples.run_rename_proposal batch /path/to/files --max-concurrency 4
+```
+
+Start with `2` or `4`, then increase cautiously and monitor local endpoint stability.

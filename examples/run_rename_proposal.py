@@ -67,11 +67,11 @@ def run_single(input_path: Path, endpoint: str, output_dir: Path, with_review: b
     print(f"Single run status: {first.status}, artifacts: {first.artifacts_dir}")
 
 
-def run_batch(directory: Path, endpoint: str, output_dir: Path, with_review: bool) -> None:
+def run_batch(directory: Path, endpoint: str, output_dir: Path, with_review: bool, *, max_concurrency: int = 1) -> None:
     proposal_task, review_task = build_tasks(manifest_writer=None, model_name="gpt-oss-20b")
     manifest_path = output_dir / "manifest.jsonl"
     first_runner = _build_runner(endpoint, output_dir, proposal_task, manifest_path)
-    batch = DirectoryBatchRunner(single_runner=first_runner)
+    batch = DirectoryBatchRunner(single_runner=first_runner, max_concurrency=max_concurrency)
     first_results = batch.run(directory)
 
     if with_review:
@@ -104,6 +104,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("path", help="Input file or directory")
     parser.add_argument("--endpoint", default="http://localhost:8000/v1/responses", help="OpenAI-compatible Responses endpoint")
     parser.add_argument("--out", default=".respkit_examples", help="Artifact root")
+    parser.add_argument("--max-concurrency", type=int, default=1, help="Max concurrent file runs in batch mode")
     parser.add_argument("--review", action="store_true", help="Run optional review pass")
     return parser.parse_args()
 
@@ -117,7 +118,7 @@ def main() -> None:
     if args.mode == "single":
         run_single(path, args.endpoint, output_dir, args.review)
     else:
-        run_batch(path, args.endpoint, output_dir, args.review)
+        run_batch(path, args.endpoint, output_dir, args.review, max_concurrency=args.max_concurrency)
 
 
 if __name__ == "__main__":

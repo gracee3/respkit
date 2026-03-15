@@ -32,21 +32,12 @@ class SingleInputRunner:
     artifacts_root: Path
     manifest_writer: ManifestWriter | None = None
 
-    def _request_payload(self, prompt_text: str, response_model: type[BaseModel] | None = None) -> dict[str, Any]:
+    def _request_payload(self, prompt_text: str) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.task.provider_model,
             "input": [Message(role="user", content=prompt_text).to_api_payload()],
             "temperature": self.task.provider_config.temperature,
         }
-        if response_model is not None:
-            payload["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": response_model.__name__,
-                    "strict": True,
-                    "schema": response_model.model_json_schema(),
-                },
-            }
         if self.task.provider_config.additional_options:
             payload.update(dict(self.task.provider_config.additional_options))
         if task_options := self.task.normalized_provider_options():
@@ -73,7 +64,7 @@ class SingleInputRunner:
         prompt_variables.setdefault("text", item.decoded_text)
         prompt_text = prompt_template.render(prompt_variables)
 
-        provider_payload = self._request_payload(prompt_text, response_model=self.task.response_model)
+        provider_payload = self._request_payload(prompt_text)
 
         if self.task.artifact_policy.include_prompt_snapshot:
             artifact_writer.write_prompt_snapshot(prompt_template.snapshot(), prompt_text)

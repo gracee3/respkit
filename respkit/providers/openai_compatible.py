@@ -77,16 +77,6 @@ class OpenAICompatibleProvider(LLMProvider):
         if cfg.additional_options:
             payload.update(dict(cfg.additional_options))
 
-        if response_model is not None:
-            payload["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": response_model.__name__,
-                    "strict": True,
-                    "schema": response_model.model_json_schema(),
-                },
-            }
-
         request_payload: dict[str, Any] = dict(payload)
 
         try:

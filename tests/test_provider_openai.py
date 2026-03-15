@@ -118,7 +118,7 @@ def test_openai_provider_success_captures_request_and_payload(monkeypatch):
     assert captured["calls"][1]["url"] == "http://localhost:8000/v1/responses"
     assert captured["json"]["model"] == "gpt-oss-20b"
     assert captured["json"]["input"] == [{"role": "user", "content": "hello"}]
-    assert captured["json"]["response_format"]["type"] == "json_schema"
+    assert "response_format" not in captured["json"]
     assert result.request_payload == captured["json"]
     assert result.parsed_payload == {"foo": 123}
     assert result.raw_response.get("usage") == {"input_tokens": 2}

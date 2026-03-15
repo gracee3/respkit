@@ -286,4 +286,80 @@ def test_openai_provider_invalid_json_payload_is_reported(monkeypatch):
     assert result.error_code == "invalid_payload"
     assert result.parsed_payload is None
     assert result.error_message is not None
-    assert "Could not parse JSON content" in result.error_message
+    assert "No parseable JSON payload" in result.error_message
+
+
+def test_openai_provider_parses_embedded_json_in_plain_text(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_client_factory(*args: Any, **kwargs: Any) -> _FakeClient:
+        client = _FakeClient(
+            response=_FakeResponse(
+                status_code=200,
+                payload={"data": [{"id": "gpt-oss-20b"}]},
+            ),
+            captured=captured,
+        )
+        client.register(
+            "post",
+            _FakeResponse(
+                status_code=200,
+                payload={
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [
+                                {"type": "output_text", "text": "prefix text {\n  \"foo\": 123\n} suffix"}
+                            ],
+                        }
+                    ],
+                    "usage": {"input_tokens": 1, "output_tokens": 2},
+                },
+            ),
+        )
+        return client
+
+    monkeypatch.setattr("httpx.Client", fake_client_factory)
+
+    provider = OpenAICompatibleProvider(endpoint="http://localhost:8000/v1/responses")
+    result = provider.complete(
+        messages=[Message(role="user", content="hello")],
+        model="gpt-oss-20b",
+        response_model=Payload,
+    )
+
+    assert result.error_code is None
+    assert result.parsed_payload == {"foo": 123}
+
+
+def test_openai_provider_rejects_plain_text_without_json(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_client_factory(*args: Any, **kwargs: Any) -> _FakeClient:
+        client = _FakeClient(
+            response=_FakeResponse(status_code=200, payload={"data": [{"id": "gpt-oss-20b"}]}),
+            captured=captured,
+        )
+        client.register(
+            "post",
+            _FakeResponse(
+                status_code=200,
+                payload={
+                    "output": [{"type": "message", "content": [{"type": "output_text", "text": "no json here"}]}],
+                },
+            ),
+        )
+        return client
+
+    monkeypatch.setattr("httpx.Client", fake_client_factory)
+
+    provider = OpenAICompatibleProvider(endpoint="http://localhost:8000/v1/responses")
+    result = provider.complete(
+        messages=[Message(role="user", content="hello")],
+        model="gpt-oss-20b",
+        response_model=Payload,
+    )
+
+    assert result.error_code == "invalid_payload"
+    assert result.error_message is not None
+    assert "No parseable JSON payload" in result.error_message

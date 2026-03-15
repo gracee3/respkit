@@ -206,14 +206,15 @@ class OpenAICompatibleProvider(LLMProvider):
                         text_blocks = [
                             item.get("text")
                             for item in content
-                            if isinstance(item, Mapping) and item.get("type") == "output_text" and isinstance(item.get("text"), str)
+                            if isinstance(item, Mapping)
+                            and item.get("type") == "output_text"
+                            and isinstance(item.get("text"), str)
                         ]
                         if text_blocks:
-                            text = "\n".join(text_blocks).strip()
-                            try:
-                                return json.loads(text), None
-                            except json.JSONDecodeError as exc:
-                                return None, f"Could not parse JSON content: {exc}"
+                            text = "\n".join(text_blocks)
+                            if parsed_text := OpenAICompatibleProvider._extract_embedded_json(text):
+                                return parsed_text, None
+                            return None, "No parseable JSON payload found in provider output message"
 
                 if piece.get("type") == "function_call":
                     if isinstance(piece.get("arguments"), str):
@@ -224,9 +225,47 @@ class OpenAICompatibleProvider(LLMProvider):
 
         # Fallback for older chat-like responses
         if isinstance(output, str):
-            try:
-                return json.loads(output), None
-            except json.JSONDecodeError as exc:
-                return None, f"Could not parse provider output string: {exc}"
+            if parsed_text := OpenAICompatibleProvider._extract_embedded_json(output):
+                return parsed_text, None
+            return None, "No parseable JSON payload found in provider output string"
 
         return None, "No parseable JSON payload found in provider output"
+
+    @staticmethod
+    def _extract_embedded_json(text: str) -> Mapping[str, Any] | None:
+        start_indexes = [idx for idx, char in enumerate(text) if char in "{["]
+        for start in start_indexes:
+            if start < 0:
+                continue
+            depth = 0
+            in_string = False
+            escape = False
+            for end in range(start, len(text)):
+                char = text[end]
+                if escape:
+                    escape = False
+                    continue
+                if char == "\\" and in_string:
+                    escape = True
+                    continue
+                if char == '"':
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if char in "{[":
+                    depth += 1
+                elif char in "}]":
+                    depth -= 1
+                    if depth == 0:
+                        candidate = text[start : end + 1]
+                        try:
+                            parsed = json.loads(candidate)
+                        except json.JSONDecodeError:
+                            break
+                        if isinstance(parsed, Mapping):
+                            return parsed
+                        return None
+                    if depth < 0:
+                        break
+        return None

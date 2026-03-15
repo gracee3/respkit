@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from typing import Any, Literal
 
+import pytest
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -365,6 +366,88 @@ def test_review_pass(tmp_path):
 
     assert review_result.status == "success"
     assert review_result.review_output.decision == "pass"
+
+
+@pytest.mark.parametrize(
+    "decision,expected",
+    [
+        ("uncertain", "review_failed"),
+        ("fail", "review_failed"),
+    ],
+)
+def test_review_ambiguous_or_failed_case(tmp_path, decision: str, expected: str):
+    proposal_prompt = make_prompt(tmp_path / "proposal", "Proposal")
+    review_prompt = make_prompt(tmp_path / "review", "Review")
+
+    review_task = TaskDefinition(
+        name="review",
+        description="review",
+        prompt_template_path=review_prompt,
+        response_model=RenameReview,
+        provider_model="test",
+        prompt_context_builder=lambda item: {
+            "old_filename": item.metadata.get("old_filename", ""),
+            "first_output": item.metadata.get("first_output", "{}"),
+            "text": item.decoded_text,
+        },
+        validators=(
+            EnumCaseNormalizer(field_values={"decision": ["pass", "fail", "uncertain"]}),
+        ),
+    )
+
+    proposal_task = TaskDefinition(
+        name="proposal",
+        description="proposal",
+        prompt_template_path=proposal_prompt,
+        response_model=RenameProposal,
+        provider_model="test",
+        validators=(
+            TrimWhitespaceValidator(),
+            EnumCaseNormalizer(field_values={"kind": ["invoice", "legal", "other"]}),
+            FillDefaultsValidator(defaults={"notes": ""}),
+        ),
+        review_policy=ReviewPolicy(
+            task=review_task,
+            context_builder=lambda original_item, first_output: {
+                "old_filename": original_item.source_id,
+                "first_output": json.dumps(first_output),
+            },
+        ),
+    )
+
+    first_provider = FakeLLMProvider(
+        [
+            {"kind": "invoice", "actor": "acme", "slug": "contract-1", "confidence": 0.91, "notes": ""},
+        ]
+    )
+    review_provider = FakeLLMProvider(
+        [{"decision": decision, "notes": "reviewed", "recommended_adjustments": "needs check"}]
+    )
+
+    first_runner = SingleInputRunner(
+        task=proposal_task,
+        provider=first_provider,
+        artifacts_root=tmp_path / "first_artifacts",
+    )
+    review_runner = SingleInputRunner(
+        task=review_task,
+        provider=review_provider,
+        artifacts_root=tmp_path / "review_artifacts",
+    )
+
+    input_file = tmp_path / "contract.txt"
+    input_file.write_text("contract source", encoding="utf-8")
+    first_result = first_runner.run(make_input(input_file))
+
+    review_result = ReviewRunner().run(
+        first_result=first_result,
+        original_item=make_input(input_file),
+        policy=proposal_task.review_policy,
+        single_runner=review_runner,
+    )
+
+    assert review_result.status == expected
+    assert review_result.review_output.decision == decision
 
 
 def test_second_task_extensibility(tmp_path):

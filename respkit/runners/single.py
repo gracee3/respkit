@@ -20,7 +20,7 @@ from ..validators.base import run_validators as run_validators
 from ..artifacts import ArtifactWriter
 from ..manifest import ManifestWriter
 from ..tasks.message import Message
-from ..utils import make_run_id
+from ..utils import RunStatus, make_run_id
 
 
 @dataclass
@@ -97,7 +97,7 @@ class SingleInputRunner:
                 errors=[ContractViolation(path="input", message=message) for message in preflight_errors],
             )
             validated_output = None
-            status = "validation_failed"
+            status = RunStatus.VALIDATION_FAILED
             if self.task.artifact_policy.include_raw_response:
                 artifact_writer.write_raw_response(dict(provider_response.raw_response))
             if self.task.artifact_policy.include_provider_request_snapshot:
@@ -122,7 +122,9 @@ class SingleInputRunner:
             else:
                 action_results = []
 
-            run_metadata["status"] = status
+            status = self._merge_action_failures(status, action_results)
+
+            run_metadata["status"] = status.value
             run_metadata["finished_at"] = datetime.now(timezone.utc).isoformat()
 
             if self.task.artifact_policy.include_run_metadata:
@@ -136,7 +138,7 @@ class SingleInputRunner:
                     validated_output=validated_output,
                     validation_report=validation_report,
                     provider_response=provider_response,
-                    status=status,
+                    status=status.value,
                 )
                 self.manifest_writer.append(manifest_row)
 
@@ -145,7 +147,7 @@ class SingleInputRunner:
                 task_name=self.task.name,
                 run_id=run_id,
                 source_id=item.source_id,
-                status=status,
+                status=status.value,
                 raw_prompt=prompt_text,
                 provider_request=dict(provider_payload),
                 provider_response=provider_response,
@@ -182,13 +184,12 @@ class SingleInputRunner:
             artifact_writer.write_parsed_response(dict(provider_response.parsed_payload or {}))
 
         validation_report, validated_output = self._validate(provider_response)
-        status = (
-            "preflight_model_not_found"
-            if provider_response.error_code == "preflight_model_not_found"
-            else ("provider_error" if provider_response.error_message is not None else ("success" if validation_report.valid else "validation_failed"))
+        status = self._compute_status(
+            provider_response=provider_response,
+            validation_report=validation_report,
         )
 
-        run_metadata["status"] = status
+        run_metadata["status"] = status.value
         run_metadata["finished_at"] = datetime.now(timezone.utc).isoformat()
         if provider_response.discovered_models is not None:
             run_metadata["discovered_models"] = provider_response.discovered_models
@@ -208,6 +209,8 @@ class SingleInputRunner:
             run_id,
             run_dir,
         )
+        status = self._merge_action_failures(status, action_results)
+        run_metadata["status"] = status.value
 
         if self.task.artifact_policy.include_action_results:
             artifact_writer.write_action_results([r.__dict__ for r in action_results])
@@ -223,7 +226,7 @@ class SingleInputRunner:
                 validated_output=validated_output,
                 validation_report=validation_report,
                 provider_response=provider_response,
-                status=status,
+                status=status.value,
             )
             self.manifest_writer.append(manifest_row)
 
@@ -232,7 +235,7 @@ class SingleInputRunner:
             task_name=self.task.name,
             run_id=run_id,
             source_id=item.source_id,
-            status=status,
+            status=status.value,
             raw_prompt=prompt_text,
             provider_request=dict(provider_response.request_payload),
             provider_response=provider_response,
@@ -242,6 +245,29 @@ class SingleInputRunner:
             artifacts_dir=str(run_dir),
             run_metadata=run_metadata,
         )
+
+    def _compute_status(self, *, provider_response: ProviderResponse, validation_report: ValidationReport) -> RunStatus:
+        if provider_response.error_code == "preflight_model_not_found":
+            return RunStatus.PREFLIGHT_MODEL_NOT_FOUND
+        if provider_response.error_code in {"invalid_json", "invalid_payload"}:
+            return RunStatus.PARSE_ERROR
+        if provider_response.error_code is not None:
+            return RunStatus.PROVIDER_ERROR
+        return RunStatus.SUCCESS if validation_report.valid else RunStatus.VALIDATION_FAILED
+
+    def _merge_action_failures(self, status: RunStatus, action_results: list[ActionResult]) -> RunStatus:
+        if any(result.success is False for result in action_results):
+            return RunStatus.ACTION_FAILED
+        return status
+
+    @staticmethod
+    def _as_status(status: str | RunStatus) -> RunStatus:
+        if isinstance(status, RunStatus):
+            return status
+        for value in RunStatus:
+            if value == status:
+                return value
+        return RunStatus.PROVIDER_ERROR
 
     def _validate(self, provider_response: ProviderResponse) -> tuple[ValidationReport, BaseModel | None]:
         if provider_response.error_code is not None or provider_response.parsed_payload is None:
@@ -311,7 +337,13 @@ class SingleInputRunner:
         provider_response: ProviderResponse,
         status: str,
     ) -> dict[str, Any]:
-        validation_status = "passed" if status == "success" else ("provider_error" if provider_response.error_message else "failed")
+        status_enum = self._as_status(status)
+        if status_enum == RunStatus.SUCCESS:
+            validation_status = "passed"
+        elif status_enum in {RunStatus.PROVIDER_ERROR, RunStatus.PARSE_ERROR, RunStatus.PREFLIGHT_MODEL_NOT_FOUND}:
+            validation_status = "provider_error"
+        else:
+            validation_status = "failed"
         return {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "task_name": self.task.name,

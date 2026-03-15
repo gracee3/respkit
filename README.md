@@ -97,6 +97,54 @@ You can override:
 make smoke-single SMOKE_ENDPOINT=http://localhost:8000/v1/responses SMOKE_OUT=tmp/smoke
 ```
 
+## Stable run statuses
+
+Status values are fixed across runners, run metadata, and manifests:
+
+- `success`
+- `preflight_model_not_found`
+- `provider_error`
+- `parse_error`
+- `validation_failed`
+- `action_failed`
+- `review_failed`
+
+`parse_error` is used only when the provider output cannot be parsed into a structured JSON payload.  
+`validation_failed` is used when the payload parses but does not pass schema/validator checks.
+
+## Batch summary
+
+Batch runs now write `batch_summary.json` in the batch output root:
+
+```bash
+make smoke-batch SMOKE_OUT=.respkit_smoke
+cat .respkit_smoke/batch_summary.json
+```
+
+The command also prints a concise status summary to stdout at end-of-batch.
+
+## Corpus export
+
+Run a directory and export `source_path,status,kind,actor,slug,confidence`:
+
+```bash
+make corpus-eval CORPUS_DIR=tests/fixtures/rename_inputs CORPUS_FORMAT=csv CORPUS_EXPORT=tmp/corpus_eval.csv
+```
+
+or directly:
+
+```bash
+python3 scripts/evaluate_corpus.py tests/fixtures/rename_inputs --format csv --export tmp/corpus_eval.csv
+```
+
+## Review interpretation
+
+Review output is intentionally narrow:
+
+- `pass` -> accepted
+- `uncertain` -> `review_failed` status, send to human review
+- `fail` -> `review_failed` status, do not auto-accept
+
 ## Artifact layout
 
 Each run writes the following files under `artifacts/<task_name>/<run_id>/`:

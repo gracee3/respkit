@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Mapping
 
 from ..inputs import NormalizedInput
 from ..tasks.definition import ReviewPolicy
 from ..tasks.result import ExecutionResult, ReviewExecutionResult
 from .single import SingleInputRunner
+from ..utils import RunStatus
 
 
 @dataclass
@@ -44,10 +46,24 @@ class ReviewRunner:
         )
 
         review_task_result = single_runner.run(review_input)
+        try:
+            status = RunStatus(review_task_result.status)
+        except ValueError:
+            status = RunStatus.PROVIDER_ERROR
+        review_output = review_task_result.validated_output
+        review_payload: Mapping[str, Any] = {}
+        if isinstance(review_output, dict):
+            review_payload = dict(review_output)
+        elif review_output is not None and hasattr(review_output, "model_dump"):
+            review_payload = review_output.model_dump()
+        if status == RunStatus.SUCCESS:
+            decision = review_payload.get("decision", "").lower()
+            if decision in {"fail", "uncertain"}:
+                status = RunStatus.REVIEW_FAILED
 
         return ReviewExecutionResult(
             run_id=review_task_result.run_id,
-            status=review_task_result.status,
+            status=status.value,
             provider_request=review_task_result.provider_request,
             review_output=review_task_result.validated_output,
             prompt=review_task_result.raw_prompt,

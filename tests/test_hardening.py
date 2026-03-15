@@ -150,9 +150,83 @@ def test_invalid_structured_output_is_captured_as_validation_failure(tmp_path):
         )
     )
 
-    assert result.status == "provider_error"
+    assert result.status == "parse_error"
     assert result.validation_report.valid is False
-    assert any("Could not parse JSON" in e.message for e in result.validation_report.errors or [])
+    assert any("Could not parse JSON content" in e.message for e in result.validation_report.errors or [])
+
+
+def test_schema_invalid_output_is_validation_failed(tmp_path):
+    task = _proposal_task(tmp_path)
+    provider = _ScriptedLLMProvider(
+        responses=[
+            {
+                "parsed_payload": {"kind": "invoice", "actor": 123, "slug": "x", "confidence": 0.99, "notes": ""},
+                "raw_response": {
+                    "output": [
+                        {"type": "message", "content": [{"type": "output_text", "text": "{}"}]}
+                    ]
+                },
+                "status_code": 200,
+            }
+        ]
+    )
+    runner = SingleInputRunner(
+        task=task,
+        provider=provider,
+        artifacts_root=tmp_path / "artifacts",
+    )
+    input_file = tmp_path / "type.txt"
+    input_file.write_text("some text", encoding="utf-8")
+
+    result = runner.run(
+        NormalizedInput(
+            source_id="type",
+            source_path=input_file,
+            media_type="text/plain",
+            decoded_text="some text",
+        )
+    )
+
+    assert result.status == "validation_failed"
+    assert not result.validation_report.valid
+    assert any("Input should be a valid string" in e.message for e in result.validation_report.errors or [])
+
+
+def test_partial_structured_output_is_validation_failed(tmp_path):
+    task = _proposal_task(tmp_path)
+    provider = _ScriptedLLMProvider(
+        responses=[
+            {
+                "parsed_payload": {"kind": "invoice", "slug": "x", "confidence": 0.99},
+                "raw_response": {
+                    "output": [
+                        {"type": "message", "content": [{"type": "output_text", "text": "{}"}]}
+                    ]
+                },
+                "status_code": 200,
+            }
+        ]
+    )
+    runner = SingleInputRunner(
+        task=task,
+        provider=provider,
+        artifacts_root=tmp_path / "artifacts",
+    )
+    input_file = tmp_path / "partial.txt"
+    input_file.write_text("some text", encoding="utf-8")
+
+    result = runner.run(
+        NormalizedInput(
+            source_id="partial",
+            source_path=input_file,
+            media_type="text/plain",
+            decoded_text="some text",
+        )
+    )
+
+    assert result.status == "validation_failed"
+    assert not result.validation_report.valid
+    assert any(getattr(e, "path", None) == "actor" for e in result.validation_report.errors or [])
 
 
 def test_provider_success_artifact_files_are_complete(tmp_path):
@@ -302,6 +376,53 @@ def test_batch_run_with_mixed_success_and_failure_inputs(tmp_path):
     assert len(manifest_lines) == 3
     statuses = [json.loads(row)["status"] for row in manifest_lines]
     assert statuses == ["success", "validation_failed", "provider_error"]
+
+
+def test_batch_summary_is_written_and_printed(tmp_path, capsys):
+    task = _proposal_task(tmp_path)
+    provider = _ScriptedLLMProvider(
+        responses=[
+            {
+                "parsed_payload": {"kind": "invoice", "actor": "Alice", "slug": "a1", "confidence": 0.9, "notes": "ok"},
+                "raw_response": {"output": [{"type": "message", "content": [{"type": "output_text", "text": "{}"}]}]},
+                "status_code": 200,
+            },
+            {
+                "parsed_payload": {"kind": "invalid", "actor": "Bob", "slug": "bad", "confidence": 1.0, "notes": "bad kind"},
+                "raw_response": {
+                    "output": [
+                        {"type": "message", "content": [{"type": "output_text", "text": "{}"}]}
+                    ]
+                },
+                "status_code": 200,
+            },
+        ]
+    )
+    runner = SingleInputRunner(
+        task=task,
+        provider=provider,
+        artifacts_root=tmp_path / "artifacts",
+        manifest_writer=ManifestWriter(tmp_path / "manifest.jsonl"),
+    )
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    for name in ("clean_easy.txt", "ambiguous_actor.txt"):
+        (input_dir / name).write_text(f"content for {name}", encoding="utf-8")
+
+    results = DirectoryBatchRunner(single_runner=runner, output_root=tmp_path / "summary_out").run(input_dir)
+    assert len(results) == 2
+    summary_path = tmp_path / "summary_out" / "batch_summary.json"
+    assert summary_path.exists()
+
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["total"] == 2
+    assert summary["status_counts"]["success"] == 1
+    assert summary["status_counts"]["validation_failed"] == 1
+
+    captured = capsys.readouterr().out
+    assert "Batch run complete" in captured
+    assert "success=1" in captured
+    assert "validation_failed=1" in captured
 
 
 def test_preflight_model_not_found_artifacts_and_manifest_status(tmp_path):

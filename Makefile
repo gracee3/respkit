@@ -52,7 +52,8 @@ OPEN_WEBUI_VLLM_API_KEY := local
 	logs logs-llm logs-openwebui \
 	healthcheck healthcheck-llm healthcheck-openwebui \
 	models shell clean clean-all \
-	smoke-single smoke-batch smoke
+	smoke-single smoke-batch smoke \
+	corpus-eval
 
 # ── Setup / build ───────────────────────────────────────
 setup:
@@ -228,6 +229,9 @@ SMOKE_ENDPOINT ?= http://localhost:8000/v1/responses
 SMOKE_OUT ?= .respkit_smoke
 SMOKE_INPUT_DIR ?= tests/fixtures/rename_inputs
 SMOKE_INPUT_FILE ?= $(SMOKE_INPUT_DIR)/clean_easy.txt
+CORPUS_DIR ?= tests/fixtures/rename_inputs
+CORPUS_FORMAT ?= csv
+CORPUS_EXPORT ?=
 
 smoke-single:
 	@rm -rf $(SMOKE_OUT)
@@ -242,6 +246,9 @@ smoke-batch:
 smoke:
 	@$(MAKE) smoke-single
 	@$(MAKE) smoke-batch
+
+corpus-eval:
+	@python3 scripts/evaluate_corpus.py $(CORPUS_DIR) --endpoint $(SMOKE_ENDPOINT) --out $(SMOKE_OUT) --format $(CORPUS_FORMAT) $(if $(CORPUS_EXPORT),--export $(CORPUS_EXPORT),)
 
 shell:
 	@for c in $(CONTAINERS); do \

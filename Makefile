@@ -1,25 +1,25 @@
 # Local GPT-OSS 20B via vLLM + optional Open WebUI
-# Default target profile is tuned for a single RTX 3090 24 GB.
+# Single-file, slim setup for one or two RTX 3090s.
 
 # ── Images ──────────────────────────────────────────────
-IMAGE_NAME := vllm/vllm-openai
-IMAGE_TAG  := latest
-IMAGE      := $(IMAGE_NAME):$(IMAGE_TAG)
-
+IMAGE := vllm/vllm-openai:latest
 OPEN_WEBUI_IMAGE := ghcr.io/open-webui/open-webui:main
 
 # ── Model / paths ───────────────────────────────────────
 MODEL_PATH ?= /data/models/openai/gpt-oss-20b
 CACHE_PATH := $(HOME)/.cache/vllm
+OPEN_WEBUI_DATA := $(HOME)/.local/share/open-webui
 
 # ── Networking / ports ──────────────────────────────────
-PORT              ?= 8000
-OPEN_WEBUI_PORT   ?= 3002
-DOCKER_NETWORK    ?= local-inference-net
+PORT ?= 8000
+OPEN_WEBUI_PORT ?= 3002
+DOCKER_NETWORK ?= local-inference-net
+DOCKER_RESTART_POLICY ?= no
+DOCKER_PULL_POLICY ?= never
 
 # ── Container names ─────────────────────────────────────
-LLM_CONTAINER          ?= vllm-gpt-oss-20b
-OPEN_WEBUI_CONTAINER   ?= open-webui
+LLM_CONTAINER ?= vllm-gpt-oss-20b
+OPEN_WEBUI_CONTAINER ?= open-webui
 CONTAINERS := $(LLM_CONTAINER) $(OPEN_WEBUI_CONTAINER)
 
 # ── GPU pinning ─────────────────────────────────────────
@@ -33,20 +33,19 @@ else
 endif
 
 # ── vLLM defaults ───────────────────────────────────────
-# These are overridden by the run-gpt-* profile targets below.
-GPU_MEM_UTIL ?= 0.88
-MAX_MODEL_LEN ?= 8192
+# Overridden by the run-gpt-* profile targets below.
+GPU_MEM_UTIL ?= 0.92
+MAX_MODEL_LEN ?= 16384
 TP_SIZE ?= 1
-EXTRA_ARGS ?= --max-num-seqs 4
+EXTRA_ARGS ?= --max-num-seqs 4 --max-num-batched-tokens 8192
 
 # ── Open WebUI settings ─────────────────────────────────
-OPEN_WEBUI_HOST_ADDR      := $(LLM_CONTAINER)
-OPEN_WEBUI_VLLM_BASE_URL  := http://$(OPEN_WEBUI_HOST_ADDR):$(PORT)/v1
-OPEN_WEBUI_VLLM_API_KEY   := local
-OPEN_WEBUI_DATA           := $(HOME)/.local/share/open-webui
+OPEN_WEBUI_HOST_ADDR := $(LLM_CONTAINER)
+OPEN_WEBUI_VLLM_BASE_URL := http://$(OPEN_WEBUI_HOST_ADDR):$(PORT)/v1
+OPEN_WEBUI_VLLM_API_KEY := local
 
 .PHONY: setup build \
-	run-llm run-gpt-safe run-gpt-balanced run-gpt-dual \
+	run-llm run-gpt-balanced run-gpt-32k run-gpt-64k-kvfp8 \
 	run-openwebui run-openwebui-with-llm open-openwebui \
 	stop stop-all stop-llm stop-openwebui \
 	logs logs-llm logs-openwebui \
@@ -58,7 +57,11 @@ setup:
 	mkdir -p $(CACHE_PATH) $(OPEN_WEBUI_DATA)
 
 build:
+ifeq ($(DOCKER_PULL_POLICY),never)
+	@echo "Skipping docker pull because DOCKER_PULL_POLICY=never"
+else
 	docker pull $(IMAGE)
+endif
 
 # ── Run: vLLM server ────────────────────────────────────
 run-llm: stop-llm build setup
@@ -70,10 +73,11 @@ run-llm: stop-llm build setup
 		--ipc=host \
 		-p $(PORT):8000 \
 		-v $(MODEL_PATH):/model:ro \
-		-v $(CACHE_PATH):/root/.cache/huggingface \
-		--restart unless-stopped \
+		-v $(CACHE_PATH):/root/.cache \
+		--restart $(DOCKER_RESTART_POLICY) \
+		--pull $(DOCKER_PULL_POLICY) \
 		$(IMAGE) \
-		--model /model \
+		/model \
 		--host 0.0.0.0 \
 		--port 8000 \
 		--gpu-memory-utilization $(GPU_MEM_UTIL) \
@@ -84,15 +88,6 @@ run-llm: stop-llm build setup
 	docker logs -f $(LLM_CONTAINER)
 
 # ── GPT profiles ────────────────────────────────────────
-# Conservative single-3090 profile
-run-gpt-safe:
-	$(MAKE) run-llm \
-		GPU=1 \
-		TP_SIZE=1 \
-		GPU_MEM_UTIL=0.88 \
-		MAX_MODEL_LEN=4096 \
-		EXTRA_ARGS="--max-num-seqs 2 --max-num-batched-tokens 4096"
-
 # Good everyday single-3090 default
 run-gpt-balanced:
 	$(MAKE) run-llm \
@@ -111,32 +106,48 @@ run-gpt-32k:
 		MAX_MODEL_LEN=32768 \
 		EXTRA_ARGS="--max-num-seqs 2 --max-num-batched-tokens 8192"
 
-# Experimental 64k profile on one 3090
-run-gpt-64k:
-	$(MAKE) run-llm \
-		GPU=1 \
-		TP_SIZE=1 \
-		GPU_MEM_UTIL=0.94 \
-		MAX_MODEL_LEN=65536 \
-		EXTRA_ARGS="--max-num-seqs 1 --max-num-batched-tokens 8192"
-
-# 64k with FP8 KV cache
-run-gpt-64k-kvfp8:
-	$(MAKE) run-llm \
-		GPU=1 \
-		TP_SIZE=1 \
-		GPU_MEM_UTIL=0.94 \
-		MAX_MODEL_LEN=65536 \
-		EXTRA_ARGS="--max-num-seqs 1 --max-num-batched-tokens 8192 --kv-cache-dtype fp8 --calculate-kv-scales"
-
-# Optional dual-GPU profile for more headroom / lower latency
-run-gpt-dual:
+run-gpt-dual-fastest:
 	$(MAKE) run-llm \
 		GPU=all \
 		TP_SIZE=2 \
-		GPU_MEM_UTIL=0.90 \
-		MAX_MODEL_LEN=32768 \
+		GPU_MEM_UTIL=0.88 \
+		MAX_MODEL_LEN=16384 \
+		EXTRA_ARGS="--max-num-seqs 4 --max-num-batched-tokens 4096"
+
+run-gpt-dual-fast:
+	$(MAKE) run-llm \
+		GPU=all \
+		TP_SIZE=2 \
+		GPU_MEM_UTIL=0.88 \
+		MAX_MODEL_LEN=16384 \
 		EXTRA_ARGS="--max-num-seqs 6 --max-num-batched-tokens 8192"
+
+run-gpt-dual-long:
+	$(MAKE) run-llm \
+		GPU=all \
+		TP_SIZE=2 \
+		GPU_MEM_UTIL=0.92 \
+		MAX_MODEL_LEN=65536 \
+		EXTRA_ARGS="--max-num-seqs 1 --max-num-batched-tokens 8192"
+
+run-gpt-dual-longest:
+	$(MAKE) run-llm \
+		GPU=all \
+		TP_SIZE=2 \
+		GPU_MEM_UTIL=0.94 \
+		MAX_MODEL_LEN=98304 \
+		EXTRA_ARGS="--max-num-seqs 1 --max-num-batched-tokens 4096"
+
+# Experimental 64k profile on one 3090 with FP8 KV cache fp8_e5m2 unsupported on vLLM 0.17.1
+# run-gpt-64k-e5m2:
+# 	$(MAKE) run-llm \
+# 		GPU=1 \
+# 		TP_SIZE=1 \
+# 		GPU_MEM_UTIL=0.94 \
+# 		MAX_MODEL_LEN=65536 \
+# 		EXTRA_ARGS="--max-num-seqs 1 --max-num-batched-tokens 8192 --kv-cache-dtype fp8_e5m2 --calculate-kv-scales"
+
+
 
 # ── Run: Open WebUI ─────────────────────────────────────
 run-openwebui: stop-openwebui setup
@@ -146,14 +157,14 @@ run-openwebui: stop-openwebui setup
 		--network $(DOCKER_NETWORK) \
 		-p $(OPEN_WEBUI_PORT):8080 \
 		-v $(OPEN_WEBUI_DATA):/app/backend/data \
-		--restart unless-stopped \
+		--restart $(DOCKER_RESTART_POLICY) \
+		--pull $(DOCKER_PULL_POLICY) \
 		-e WEBUI_AUTH=false \
 		-e OPENAI_API_BASE_URL=$(OPEN_WEBUI_VLLM_BASE_URL) \
 		-e OPENAI_API_BASE_URLS=$(OPEN_WEBUI_VLLM_BASE_URL) \
 		-e OPENAI_API_KEY=$(OPEN_WEBUI_VLLM_API_KEY) \
 		-e OPENAI_API_KEYS=$(OPEN_WEBUI_VLLM_API_KEY) \
 		$(OPEN_WEBUI_IMAGE)
-	docker logs -f $(OPEN_WEBUI_CONTAINER)
 
 run-openwebui-with-llm:
 	$(MAKE) run-gpt-balanced >/tmp/run-llm.log 2>&1 & \

@@ -50,7 +50,8 @@ OPEN_WEBUI_VLLM_API_KEY := local
 	stop stop-all stop-llm stop-openwebui \
 	logs logs-llm logs-openwebui \
 	healthcheck healthcheck-llm healthcheck-openwebui \
-	models shell clean clean-all
+	models shell clean clean-all \
+	smoke-single smoke-batch smoke
 
 # ── Setup / build ───────────────────────────────────────
 setup:
@@ -95,16 +96,15 @@ run-gpt-balanced:
 		TP_SIZE=1 \
 		GPU_MEM_UTIL=0.92 \
 		MAX_MODEL_LEN=16384 \
-		EXTRA_ARGS="--max-num-seqs 4 --max-num-batched-tokens 8192"
+		EXTRA_ARGS="--max-num-seqs 4 --max-num-batched-tokens 4096"
 
-# Long-context single-3090 profile
 run-gpt-32k:
 	$(MAKE) run-llm \
 		GPU=1 \
 		TP_SIZE=1 \
 		GPU_MEM_UTIL=0.92 \
 		MAX_MODEL_LEN=32768 \
-		EXTRA_ARGS="--max-num-seqs 2 --max-num-batched-tokens 8192"
+		EXTRA_ARGS="--max-num-seqs 2 --max-num-batched-tokens 4096"
 
 run-gpt-dual-fastest:
 	$(MAKE) run-llm \
@@ -120,7 +120,7 @@ run-gpt-dual-fast:
 		TP_SIZE=2 \
 		GPU_MEM_UTIL=0.88 \
 		MAX_MODEL_LEN=16384 \
-		EXTRA_ARGS="--max-num-seqs 6 --max-num-batched-tokens 8192"
+		EXTRA_ARGS="--max-num-seqs 6 --max-num-batched-tokens 4096"
 
 run-gpt-dual-long:
 	$(MAKE) run-llm \
@@ -136,7 +136,7 @@ run-gpt-dual-longest:
 		TP_SIZE=2 \
 		GPU_MEM_UTIL=0.94 \
 		MAX_MODEL_LEN=98304 \
-		EXTRA_ARGS="--max-num-seqs 1 --max-num-batched-tokens 4096"
+		EXTRA_ARGS="--max-num-seqs 1 --max-num-batched-tokens 8192"
 
 # Experimental 64k profile on one 3090 with FP8 KV cache fp8_e5m2 unsupported on vLLM 0.17.1
 # run-gpt-64k-e5m2:
@@ -220,6 +220,25 @@ healthcheck-openwebui:
 # ── Utility ─────────────────────────────────────────────
 models:
 	@curl -s http://localhost:$(PORT)/v1/models | python3 -m json.tool
+
+SMOKE_ENDPOINT ?= http://localhost:8000/v1/responses
+SMOKE_OUT ?= .respkit_smoke
+SMOKE_INPUT_DIR ?= tests/fixtures/rename_inputs
+SMOKE_INPUT_FILE ?= $(SMOKE_INPUT_DIR)/clean_easy.txt
+
+smoke-single:
+	@rm -rf $(SMOKE_OUT)
+	@mkdir -p $(SMOKE_OUT)
+	@python3 -m examples.run_rename_proposal single $(SMOKE_INPUT_FILE) --endpoint $(SMOKE_ENDPOINT) --out $(SMOKE_OUT)
+
+smoke-batch:
+	@rm -rf $(SMOKE_OUT)
+	@mkdir -p $(SMOKE_OUT)
+	@python3 -m examples.run_rename_proposal batch $(SMOKE_INPUT_DIR) --endpoint $(SMOKE_ENDPOINT) --out $(SMOKE_OUT)
+
+smoke:
+	@$(MAKE) smoke-single
+	@$(MAKE) smoke-batch
 
 shell:
 	@for c in $(CONTAINERS); do \

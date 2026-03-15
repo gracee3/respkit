@@ -32,6 +32,27 @@ class SingleInputRunner:
     artifacts_root: Path
     manifest_writer: ManifestWriter | None = None
 
+    def _request_payload(self, prompt_text: str, response_model: type[BaseModel] | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self.task.provider_model,
+            "input": [Message(role="user", content=prompt_text).to_api_payload()],
+            "temperature": self.task.provider_config.temperature,
+        }
+        if response_model is not None:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": response_model.__name__,
+                    "strict": True,
+                    "schema": response_model.model_json_schema(),
+                },
+            }
+        if self.task.provider_config.additional_options:
+            payload.update(dict(self.task.provider_config.additional_options))
+        if task_options := self.task.normalized_provider_options():
+            payload.update(task_options)
+        return payload
+
     def run(self, item: NormalizedInput) -> ExecutionResult:
         run_id = make_run_id(item.source_id, str(item.source_path) if item.source_path else None, dict(item.metadata))
         run_dir = self.artifacts_root / self.task.name / run_id
@@ -52,8 +73,88 @@ class SingleInputRunner:
         prompt_variables.setdefault("text", item.decoded_text)
         prompt_text = prompt_template.render(prompt_variables)
 
+        provider_payload = self._request_payload(prompt_text, response_model=self.task.response_model)
+
         if self.task.artifact_policy.include_prompt_snapshot:
             artifact_writer.write_prompt_snapshot(prompt_template.snapshot(), prompt_text)
+
+        preflight_errors = self._validate_input_preconditions(item)
+        if preflight_errors:
+            provider_response = ProviderResponse(
+                request_payload=provider_payload,
+                raw_response={
+                    "error": "input_preflight_validation_failed",
+                    "errors": preflight_errors,
+                    "input_length": len(item.decoded_text.strip()),
+                },
+                parsed_payload=None,
+                usage=None,
+                status_code=400,
+            )
+            validation_report = ValidationReport(
+                valid=False,
+                value={"input_length": len(item.decoded_text.strip()), "preflight_errors": preflight_errors},
+                errors=[ContractViolation(path="input", message=message) for message in preflight_errors],
+            )
+            validated_output = None
+            status = "validation_failed"
+            if self.task.artifact_policy.include_raw_response:
+                artifact_writer.write_raw_response(dict(provider_response.raw_response))
+            if self.task.artifact_policy.include_provider_request_snapshot:
+                artifact_writer.write_provider_request_snapshot(dict(provider_payload))
+            if self.task.artifact_policy.include_parsed_response:
+                artifact_writer.write_parsed_response(None)
+            if self.task.artifact_policy.include_validation_report:
+                artifact_writer.write_validation_report(validation_report.to_dict())
+            if self.task.artifact_policy.include_validated_response:
+                artifact_writer.write_validated_response(None)
+            if self.task.artifact_policy.include_action_results:
+                action_results = self._run_actions(
+                    item,
+                    provider_response,
+                    validated_output,
+                    validation_report,
+                    run_metadata,
+                    run_id,
+                    run_dir,
+                )
+                artifact_writer.write_action_results([r.__dict__ for r in action_results])
+            else:
+                action_results = []
+
+            run_metadata["status"] = status
+            run_metadata["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+            if self.task.artifact_policy.include_run_metadata:
+                artifact_writer.write_run_metadata(run_metadata)
+
+            if self.manifest_writer is not None:
+                manifest_row = self._build_manifest_row(
+                    run_id=run_id,
+                    run_dir=run_dir,
+                    item=item,
+                    validated_output=validated_output,
+                    validation_report=validation_report,
+                    provider_response=provider_response,
+                    status=status,
+                )
+                self.manifest_writer.append(manifest_row)
+
+            return ExecutionResult(
+                input=item,
+                task_name=self.task.name,
+                run_id=run_id,
+                source_id=item.source_id,
+                status=status,
+                raw_prompt=prompt_text,
+                provider_request=dict(provider_payload),
+                provider_response=provider_response,
+                validation_report=validation_report,
+                validated_output=validated_output,
+                action_results=[r.__dict__ for r in action_results],
+                artifacts_dir=str(run_dir),
+                run_metadata=run_metadata,
+            )
 
         provider_response = self.provider.complete(
             messages=[Message(role="user", content=prompt_text)],
@@ -73,8 +174,8 @@ class SingleInputRunner:
         if self.task.artifact_policy.include_raw_response:
             artifact_writer.write_raw_response(dict(provider_response.raw_response))
 
-        if self.task.artifact_policy.include_parsed_response and provider_response.parsed_payload is not None:
-            artifact_writer.write_parsed_response(provider_response.parsed_payload)
+        if self.task.artifact_policy.include_parsed_response:
+            artifact_writer.write_parsed_response(dict(provider_response.parsed_payload or {}))
 
         validation_report, validated_output = self._validate(provider_response)
         status = (
@@ -89,7 +190,7 @@ class SingleInputRunner:
         if self.task.artifact_policy.include_validation_report:
             artifact_writer.write_validation_report(validation_report.to_dict())
 
-        if validated_output is not None and self.task.artifact_policy.include_validated_response:
+        if self.task.artifact_policy.include_validated_response:
             artifact_writer.write_validated_response(_to_mapping(validated_output))
 
         action_results = self._run_actions(
@@ -182,6 +283,17 @@ class SingleInputRunner:
             ]
             return ValidationReport(valid=False, value=validator_report.payload, errors=errors), None
 
+    def _validate_input_preconditions(self, item: NormalizedInput) -> list[str]:
+        if self.task.min_input_chars is None:
+            return []
+
+        text = item.decoded_text.strip()
+        if len(text) < self.task.min_input_chars:
+            return [
+                f"Input text length {len(text)} below minimum {self.task.min_input_chars} for task '{self.task.name}'"
+            ]
+        return []
+
     def _build_manifest_row(
         self,
         *,
@@ -211,6 +323,7 @@ class SingleInputRunner:
             "provider_error": provider_response.error_message,
             "validation_passed": validation_report.valid,
             "has_validated_output": validated_output is not None,
+            "validated_output_summary": self._summarize_payload(validated_output),
         }
 
     def _run_actions(
@@ -248,6 +361,21 @@ class SingleInputRunner:
                     )
                 )
         return results
+
+    @staticmethod
+    def _summarize_payload(payload: BaseModel | None) -> Mapping[str, Any]:
+        if payload is None:
+            return {}
+
+        value = payload.model_dump() if isinstance(payload, BaseModel) else payload
+        if not isinstance(value, dict):
+            return {}
+
+        summary: dict[str, Any] = {}
+        for key, field_value in value.items():
+            if isinstance(field_value, (str, int, float, bool)):
+                summary[key] = field_value
+        return summary
 
 
 def _to_dict_model(value: Any) -> Mapping[str, Any] | None:

@@ -73,11 +73,44 @@ Then call a `SingleInputRunner` with your task.
 ## Running the example task
 
 ```bash
-python -m examples.run_rename_proposal single /path/to/text.txt --endpoint http://localhost:8000/v1 --out .respkit_demo
-python -m examples.run_rename_proposal batch /path/to/text-directory --endpoint http://localhost:8000/v1 --out .respkit_demo --review
+python -m examples.run_rename_proposal single /path/to/text.txt --endpoint http://localhost:8000/v1/responses --out .respkit_demo
+python -m examples.run_rename_proposal batch /path/to/text-directory --endpoint http://localhost:8000/v1/responses --out .respkit_demo --review
 ```
 
 You can add `--review` to perform the optional second-pass review with the companion task.
+
+## Local smoke test
+
+Use the fixtures in `tests/fixtures/rename_inputs/` and run against a local endpoint:
+
+```bash
+make smoke-single      # runs one file at tests/fixtures/rename_inputs/clean_easy.txt
+make smoke-batch       # runs all local fixture inputs
+make smoke             # runs single then batch
+```
+
+The smoke targets use `--endpoint http://localhost:8000/v1/responses` by default and write artifacts to `.respkit_smoke`.
+
+You can override:
+
+```bash
+make smoke-single SMOKE_ENDPOINT=http://localhost:8000/v1/responses SMOKE_OUT=tmp/smoke
+```
+
+## Artifact layout
+
+Each run writes the following files under `artifacts/<task_name>/<run_id>/`:
+
+- `prompt_template.md` — source template snapshot
+- `prompt.txt` — rendered prompt
+- `provider_request.json` — request payload sent to the provider
+- `raw_response.json` — raw provider response
+- `parsed_response.json` — parsed JSON payload when available
+- `validation_report.json` — normalized validation outcome
+- `validated_response.json` — validated output after schema/validator pass
+- `action_results.json` — action execution summaries
+- `run_metadata.json` — run metadata and status
+- `manifest_row.json` — optional row writer output (if manifest action is used)
 
 ## Example structure summary
 
@@ -94,3 +127,9 @@ The review task is intentionally small:
 - output is `{decision: pass|fail|uncertain, notes, recommended_adjustments}`
 
 This first iteration keeps behavior explicit and avoids framework-heavy patterns so new tasks can be added by editing task definitions only.
+
+## Troubleshooting local endpoints
+
+- If the response parser never captures fields, lower temperature and ensure the endpoint is using `response_format` with `json_schema`.
+- If runs fail with request errors, inspect `provider_request.json` and `raw_response.json` for URL mismatches (`/v1/responses` vs `/responses`), headers, and payload shape.
+- If runs return `validation_failed` on every file, inspect `validation_report.json` to see whether the issue is provider parse failure, schema mismatch, or task validators.

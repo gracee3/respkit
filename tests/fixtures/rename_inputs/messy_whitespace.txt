@@ -1,0 +1,9 @@
+ 
+   
+From:   Casey 
+Date:2024-11-08
+Time:10:00
+
+   billing   note   with   irregular   spacing   and   tabs\t\t
+
+     

@@ -73,7 +73,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run rename proposal example")
     parser.add_argument("mode", choices=("single", "batch"), help="single file or directory batch")
     parser.add_argument("path", help="Input file or directory")
-    parser.add_argument("--endpoint", default="http://localhost:8000/v1", help="OpenAI-compatible endpoint")
+    parser.add_argument("--endpoint", default="http://localhost:8000/v1/responses", help="OpenAI-compatible Responses endpoint")
     parser.add_argument("--out", default=".respkit_examples", help="Artifact root")
     parser.add_argument("--review", action="store_true", help="Run optional review pass")
     return parser.parse_args()

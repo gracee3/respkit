@@ -34,6 +34,7 @@ class TaskDefinition:
     artifact_policy: ArtifactPolicy = field(default_factory=ArtifactPolicy)
     provider_config: ProviderConfig = field(default_factory=ProviderConfig)
     input_mode: str = "text"
+    min_input_chars: int | None = None
     prompt_context_builder: PromptContextBuilder = lambda input_obj: {"text": input_obj.decoded_text}
     review_policy: "ReviewPolicy | None" = None
 

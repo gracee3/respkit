@@ -28,6 +28,17 @@ class ArtifactWriter:
 
     artifact_dir: Path
 
+    PROMPT_TEMPLATE_FILE = "prompt_template.md"
+    PROMPT_RENDERED_FILE = "prompt.txt"
+    PROVIDER_REQUEST_FILE = "provider_request.json"
+    RAW_RESPONSE_FILE = "raw_response.json"
+    PARSED_RESPONSE_FILE = "parsed_response.json"
+    VALIDATED_RESPONSE_FILE = "validated_response.json"
+    VALIDATION_REPORT_FILE = "validation_report.json"
+    ACTION_RESULTS_FILE = "action_results.json"
+    RUN_METADATA_FILE = "run_metadata.json"
+    MANIFEST_ROW_FILE = "manifest_row.json"
+
     def __post_init__(self) -> None:
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
 
@@ -42,36 +53,35 @@ class ArtifactWriter:
         return path
 
     def write_run_metadata(self, metadata: Mapping[str, Any]) -> Path:
-        return self.write_json("run_metadata.json", metadata)
+        return self.write_json(self.RUN_METADATA_FILE, metadata)
 
     def write_prompt_snapshot(self, template_source: str, rendered_prompt: str) -> None:
-        (self.artifact_dir / "prompt_template.md").write_text(template_source, encoding="utf-8")
-        self.write_text("prompt.txt", rendered_prompt)
+        (self.artifact_dir / self.PROMPT_TEMPLATE_FILE).write_text(template_source, encoding="utf-8")
+        self.write_text(self.PROMPT_RENDERED_FILE, rendered_prompt)
 
     def write_raw_response(self, response: Mapping[str, Any]) -> None:
-        self.write_json("raw_response.json", response)
+        self.write_json(self.RAW_RESPONSE_FILE, response)
 
     def write_provider_request_snapshot(self, request_payload: Mapping[str, Any]) -> None:
-        self.write_json("provider_request.json", request_payload)
+        self.write_json(self.PROVIDER_REQUEST_FILE, request_payload)
 
     def write_parsed_response(self, payload: Mapping[str, Any] | None) -> None:
-        if payload is not None:
-            self.write_json("parsed_response.json", payload)
+        self.write_json(self.PARSED_RESPONSE_FILE, payload or {})
 
-    def write_validated_response(self, payload: Mapping[str, Any]) -> None:
-        self.write_json("validated_response.json", payload)
+    def write_validated_response(self, payload: Mapping[str, Any] | None) -> None:
+        self.write_json(self.VALIDATED_RESPONSE_FILE, {} if payload is None else payload)
 
     def write_validation_report(self, report: Mapping[str, Any]) -> None:
-        self.write_json("validation_report.json", report)
+        self.write_json(self.VALIDATION_REPORT_FILE, report)
 
     def write_action_results(self, results: list[dict[str, Any]]) -> None:
-        self.write_json("action_results.json", results)
+        self.write_json(self.ACTION_RESULTS_FILE, results)
 
     def manifest_row_path(self) -> Path:
-        return self.artifact_dir / "manifest_row.json"
+        return self.artifact_dir / self.MANIFEST_ROW_FILE
 
     def write_manifest_row(self, row: Mapping[str, Any]) -> Path:
-        return self.write_json("manifest_row.json", row)
+        return self.write_json(self.MANIFEST_ROW_FILE, row)
 
 
 @dataclass(frozen=True)

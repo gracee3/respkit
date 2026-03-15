@@ -122,6 +122,7 @@ def build_tasks(
         prompt_template_path=proposal_prompt,
         response_model=RenameProposalOutput,
         provider_model=model_name,
+        min_input_chars=20,
         validators=(
             TrimWhitespaceValidator(),
             EnumCaseNormalizer(field_values={"kind": ["legal", "billing", "correspondence", "notes", "other"]}),

@@ -15,7 +15,11 @@ class OpenAICompatibleProvider(LLMProvider):
     """Thin wrapper around an OpenAI-compatible Responses endpoint."""
 
     def __init__(self, endpoint: str, api_key: str | None = None) -> None:
-        self._endpoint = endpoint.rstrip("/")
+        normalized = endpoint.rstrip("/")
+        if normalized.endswith("/responses"):
+            self._endpoint = normalized
+        else:
+            self._endpoint = f"{normalized}/responses"
         self._api_key = api_key
 
     def complete(
@@ -54,7 +58,7 @@ class OpenAICompatibleProvider(LLMProvider):
         try:
             with httpx.Client(timeout=cfg.timeout_s) as client:
                 response = client.post(
-                    f"{self._endpoint}/responses",
+                    self._endpoint,
                     json=payload,
                     headers=headers,
                 )

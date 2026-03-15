@@ -96,6 +96,34 @@ def test_openai_provider_success_captures_request_and_payload(monkeypatch):
     assert result.status_code == 200
 
 
+def test_openai_provider_accepts_full_responses_endpoint(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_client_factory(*args: Any, **kwargs: Any) -> _FakeClient:
+        return _FakeClient(
+            response=_FakeResponse(
+                status_code=200,
+                payload={
+                    "output": [{"type": "message", "content": [{"type": "output_text", "text": '{"foo": 456}'}]}],
+                },
+            ),
+            captured=captured,
+        )
+
+    monkeypatch.setattr("httpx.Client", fake_client_factory)
+
+    provider = OpenAICompatibleProvider(endpoint="http://localhost:8000/v1/responses")
+    result = provider.complete(
+        messages=[Message(role="user", content="hello")],
+        model="gpt-oss-20b",
+        response_model=Payload,
+    )
+
+    assert captured["url"] == "http://localhost:8000/v1/responses"
+    assert result.parsed_payload == {"foo": 456}
+    assert result.error_code is None
+
+
 def test_openai_provider_request_error_is_normalized(monkeypatch):
     captured: dict[str, Any] = {}
 

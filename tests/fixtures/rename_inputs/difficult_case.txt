@@ -1,0 +1,8 @@
+Date: 2024-11-08
+Time: 10:00
+From: "Ms. Evelyn O'Connor (Legal Dept.)" <legal@firm.example>
+
+Interoffice memo: Please archive as legal backup note
+
+Attachment mentions case file 2024-11-08-LEGAL-RENAME and includes both billing and correspondence references.
+This text includes mixed languages in places: "Resumen de caso / legal update" and multiple actors: Alex, Sam, Lee.

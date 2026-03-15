@@ -1,0 +1,6 @@
+From: invoice@acmecorp.com
+Date: 2024-11-08
+Time: 14:30
+Subject: Invoice 2024-11-08 for Services
+
+Acme Legal Services provided litigation support for the Q4 case. Total due: 1200.00.

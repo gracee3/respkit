@@ -22,8 +22,56 @@ def _first(pattern: str, text: str) -> str | None:
 
 
 def _first_alpha_token(filename: str) -> str | None:
-    match = re.match(r"[A-Za-z0-9_-]+", filename.replace(" ", "_"))
-    return match.group(0) if match else None
+    for match in re.finditer(r"[A-Za-z]+", filename):
+        token = match.group(0)
+        if len(token) > 2:
+            return token
+    return None
+
+
+_TIME_PATTERNS = (
+    r"\b(2[0-3]|[01]?[0-9]):[0-5][0-9]\b",
+)
+
+
+_ACTOR_CANONICAL_PATTERNS = (
+    ("assistant principal", r"\bassistant\s*principal\b"),
+    ("assistant manager", r"\bassistant\s*manager\b"),
+    ("deputy principal", r"\bdeputy\s*principal\b"),
+    ("vice principal", r"\bvice\s*principal\b"),
+    ("principal", r"\bprincipal\b"),
+    ("assistant principal", r"\bprincipal\s+assistant\b"),
+    ("pta", r"\bpta\b"),
+)
+
+
+def _first_time(text: str) -> str | None:
+    for pattern in _TIME_PATTERNS:
+        found = _first(pattern, text)
+        if found:
+            return found
+
+    # Avoid false positives from date-like groups such as 2024-10-09 by only accepting
+    # explicit four-digit time tokens that look like HHMM and are not obviously year-like.
+    for match in re.finditer(r"\d{4}", text):
+        token = match.group(0)
+        before = text[match.start() - 1] if match.start() > 0 else ""
+        after = text[match.end()] if match.end() < len(text) else ""
+        if (before == "-" and after == "-") or (before == "" and after == "-"):
+            continue
+        hour = int(token[:2])
+        minute = int(token[2:])
+        if hour <= 23 and minute <= 59:
+            return f"{hour:02d}:{minute:02d}"
+    return None
+
+
+def _extract_actor_anchor(text: str) -> str | None:
+    lowered = text.lower()
+    for canonical, pattern in _ACTOR_CANONICAL_PATTERNS:
+        if re.search(pattern, lowered):
+            return canonical
+    return None
 
 
 def extract_anchors(path: Path | None, text: str) -> dict[str, str | None]:
@@ -34,9 +82,69 @@ def extract_anchors(path: Path | None, text: str) -> dict[str, str | None]:
         "old_filename": old_filename,
         "source_token": _first_alpha_token(old_filename) or "",
         "candidate_date": _first(r"\d{4}-\d{2}-\d{2}|\d{8}", old_filename),
-        "candidate_time": _first(r"\b(2[0-3]|[01]?[0-9]):[0-5][0-9]\b", old_filename),
+        "candidate_time": _first_time(old_filename),
+        "actor_anchor": _extract_actor_anchor(f"{old_filename} {text}"),
         "text": text,
     }
+
+
+def _canonicalize_actor(raw_actor: str, actor_anchor: str | None) -> str:
+    actor = raw_actor.strip().lower()
+    if not actor:
+        return actor
+
+    aliases = {
+        "asst principal": "assistant principal",
+        "asst. principal": "assistant principal",
+        "assistant pr": "assistant principal",
+        "principal (asst)": "assistant principal",
+    }
+    for alias, canonical in aliases.items():
+        if actor == alias:
+            return canonical
+
+    if actor_anchor and actor == "principal" and actor_anchor != "principal":
+        return actor_anchor
+    if actor in {"ap", "a principal", "asst principal"} and actor_anchor:
+        return actor_anchor
+
+    return actor
+
+
+def _calibrate_confidence(payload: dict[str, Any], anchors: dict[str, str | None]) -> Any:
+    confidence = payload.get("confidence")
+    try:
+        confidence_value = float(confidence)
+    except (TypeError, ValueError):
+        return confidence
+
+    if confidence_value < 0:
+        confidence_value = 0.0
+    if confidence_value > 1:
+        confidence_value = 1.0
+
+    # If anchors are weak or conflicting, avoid overconfident outputs.
+    missing_date_or_time = anchors.get("candidate_date") is None or anchors.get("candidate_time") is None
+    if missing_date_or_time and confidence_value > 0.85:
+        confidence_value = 0.85
+
+    if anchors.get("actor_anchor") is None and confidence_value > 0.9:
+        confidence_value = 0.9
+
+    return confidence_value
+
+
+def normalize_proposal_output(payload: dict[str, Any], item: NormalizedInput) -> dict[str, Any]:
+    """Deterministic post-parse normalization for proposal output."""
+
+    anchors = extract_anchors(item.source_path, item.decoded_text)
+    output = dict(payload)
+
+    if "actor" in output and isinstance(output.get("actor"), str):
+        output["actor"] = _canonicalize_actor(output["actor"], anchors.get("actor_anchor"))
+    if "confidence" in output:
+        output["confidence"] = _calibrate_confidence(output, anchors)
+    return output
 
 
 def build_proposal_context(item: NormalizedInput) -> dict[str, Any]:
@@ -130,6 +238,7 @@ def build_tasks(
         ),
         actions=tuple(actions),
         prompt_context_builder=build_proposal_context,
+        response_transforms=(normalize_proposal_output,),
         review_policy=ReviewPolicy(
             task=review_task,
             context_builder=build_review_context,

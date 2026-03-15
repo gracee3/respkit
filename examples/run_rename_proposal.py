@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
+from respkit.artifacts import ArtifactWriter
 from respkit.manifest import ManifestWriter
 from respkit.providers.openai_compatible import OpenAICompatibleProvider
 from respkit.runners import SingleInputRunner, DirectoryBatchRunner, ReviewRunner
@@ -24,6 +26,23 @@ def _build_runner(endpoint: str, output_dir: Path, task_config, manifest_path: P
     )
 
 
+def _annotate_review_not_run(first_result, reason: str) -> None:
+    artifacts_dir = Path(first_result.artifacts_dir)
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    review_status_path = artifacts_dir / "review_status.json"
+    review_status_payload = {"review_status": "not_run", "reason": reason, "first_run_id": first_result.run_id}
+    review_status_path.write_text(json.dumps(review_status_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    run_metadata_path = artifacts_dir / ArtifactWriter.RUN_METADATA_FILE
+    if run_metadata_path.exists():
+        existing = json.loads(run_metadata_path.read_text(encoding="utf-8"))
+    else:
+        existing = {}
+    existing["review_status"] = "not_run"
+    existing["review_status_reason"] = reason
+    run_metadata_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def run_single(input_path: Path, endpoint: str, output_dir: Path, with_review: bool) -> None:
     proposal_task, review_task = build_tasks(manifest_writer=None, model_name="gpt-oss-20b")
     manifest_path = output_dir / "manifest.jsonl"
@@ -36,10 +55,15 @@ def run_single(input_path: Path, endpoint: str, output_dir: Path, with_review: b
     )
     first = runner.run(normalized)
 
-    if with_review and first.validation_report.valid:
-        reviewer = _build_runner(endpoint, output_dir, review_task, manifest_path)
-        review_result = ReviewRunner().run(first, normalized, proposal_task.review_policy, reviewer)
-        print(f"Single run review status: {review_result.status}")
+    if with_review:
+        if first.status == "success":
+            reviewer = _build_runner(endpoint, output_dir, review_task, manifest_path)
+            review_result = ReviewRunner().run(first, normalized, proposal_task.review_policy, reviewer)
+            print(f"Single run review status: {review_result.status}")
+        else:
+            reason = f"first-pass status was {first.status}; review requires success"
+            _annotate_review_not_run(first, reason)
+            print(f"Single run review status: not_run ({reason})")
     print(f"Single run status: {first.status}, artifacts: {first.artifacts_dir}")
 
 
@@ -60,6 +84,11 @@ def run_batch(directory: Path, endpoint: str, output_dir: Path, with_review: boo
                 media_type="text/plain",
                 decoded_text=read_text_file(original),
             )
+            if first_result.status != "success":
+                reason = f"first-pass status was {first_result.status}; review requires success"
+                _annotate_review_not_run(first_result, reason)
+                print(f"review status for {original.name}: not_run ({reason})")
+                continue
             review_run = ReviewRunner().run(
                 first_result=first_result,
                 original_item=review_input,

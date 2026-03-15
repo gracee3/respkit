@@ -183,7 +183,7 @@ class SingleInputRunner:
         if self.task.artifact_policy.include_parsed_response:
             artifact_writer.write_parsed_response(dict(provider_response.parsed_payload or {}))
 
-        validation_report, validated_output = self._validate(provider_response)
+        validation_report, validated_output = self._validate(provider_response, item)
         status = self._compute_status(
             provider_response=provider_response,
             validation_report=validation_report,
@@ -269,7 +269,9 @@ class SingleInputRunner:
                 return value
         return RunStatus.PROVIDER_ERROR
 
-    def _validate(self, provider_response: ProviderResponse) -> tuple[ValidationReport, BaseModel | None]:
+    def _validate(
+        self, provider_response: ProviderResponse, item: NormalizedInput
+    ) -> tuple[ValidationReport, BaseModel | None]:
         if provider_response.error_code is not None or provider_response.parsed_payload is None:
             errors = [
                 ContractViolation(
@@ -302,8 +304,22 @@ class SingleInputRunner:
                 None,
             )
 
+        transformed_payload = validator_report.payload
         try:
-            validated = self.task.response_model.model_validate(validator_report.payload)
+            for transform in self.task.response_transforms:
+                transformed_payload = transform(dict(transformed_payload), item)
+        except Exception as exc:  # noqa: BLE001
+            return (
+                ValidationReport(
+                    valid=False,
+                    value=transformed_payload,
+                    errors=[ContractViolation(path="transform", message=f"Response transform failed: {exc}")],
+                ),
+                None,
+            )
+
+        try:
+            validated = self.task.response_model.model_validate(transformed_payload)
             return ValidationReport(valid=True, value=_to_dict_model(validated), errors=[]), validated
         except ValidationError as exc:
             errors = [
@@ -313,7 +329,7 @@ class SingleInputRunner:
                 )
                 for violation in exc.errors()
             ]
-            return ValidationReport(valid=False, value=validator_report.payload, errors=errors), None
+            return ValidationReport(valid=False, value=transformed_payload, errors=errors), None
 
     def _validate_input_preconditions(self, item: NormalizedInput) -> list[str]:
         if self.task.min_input_chars is None:

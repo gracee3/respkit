@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from ..inputs import NormalizedInput
+from ..contracts import ContractViolation, ValidationReport
+from ..providers.base import ProviderResponse
 from ..tasks.definition import ReviewPolicy
 from ..tasks.result import ExecutionResult, ReviewExecutionResult
 from .single import SingleInputRunner
@@ -23,6 +25,29 @@ class ReviewRunner:
         policy: ReviewPolicy,
         single_runner: SingleInputRunner,
     ) -> ReviewExecutionResult:
+        if first_result.status != "success":
+            reason = f"first-pass status was '{first_result.status}', review requires successful parse and validation"
+            review_metadata = {
+                "review_status": "not_run",
+                "reason": reason,
+            }
+            return ReviewExecutionResult(
+                run_id=first_result.run_id,
+                status="not_run",
+                review_status="not_run",
+                provider_request={},
+                review_output=review_metadata,
+                prompt="",
+                provider_response=ProviderResponse(
+                    request_payload={},
+                    raw_response={},
+                    parsed_payload=None,
+                    usage=None,
+                ),
+                validation_report=ValidationReport(valid=False, value=review_metadata, errors=[ContractViolation(path="review", message=reason)]),
+                artifacts_dir=first_result.artifacts_dir,
+            )
+
         first_output = first_result.validated_output
         if isinstance(first_output, dict):
             first_payload = dict(first_output)
@@ -64,6 +89,7 @@ class ReviewRunner:
         return ReviewExecutionResult(
             run_id=review_task_result.run_id,
             status=status.value,
+            review_status="requested",
             provider_request=review_task_result.provider_request,
             review_output=review_task_result.validated_output,
             prompt=review_task_result.raw_prompt,

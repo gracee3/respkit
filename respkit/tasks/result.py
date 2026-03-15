@@ -36,6 +36,7 @@ class ReviewExecutionResult:
 
     run_id: str
     status: str
+    review_status: str
     provider_request: dict[str, Any]
     review_output: Any | None
     prompt: str

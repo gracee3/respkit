@@ -21,6 +21,7 @@ from respkit.runners import DirectoryBatchRunner, ReviewRunner, SingleInputRunne
 from respkit.tasks import ReviewPolicy, TaskDefinition
 from respkit.tasks.message import Message
 from respkit.validators import EnumCaseNormalizer, FillDefaultsValidator, TrimWhitespaceValidator
+from examples.rename_file_proposal.task import normalize_proposal_output
 
 
 class FakeLLMProvider(LLMProvider):
@@ -52,6 +53,38 @@ class FakeLLMProvider(LLMProvider):
             parsed_payload=payload,
             usage={"input_tokens": 1, "output_tokens": 2},
             status_code=200,
+        )
+
+
+class ScriptedLLMProvider(LLMProvider):
+    def __init__(self, responses: list[dict[str, Any]]) -> None:
+        self._responses = list(responses)
+        self.calls: list[tuple[list[Message], str, type | None, ProviderConfig | None, dict | None]] = []
+
+    def complete(
+        self,
+        *,
+        messages: list[Message],
+        model: str,
+        response_model: type | None = None,
+        config: ProviderConfig | None = None,
+    ) -> ProviderResponse:
+        payload = self._responses.pop(0)
+        request_payload = {
+            "model": model,
+            "input": [message.to_api_payload() for message in messages],
+            "temperature": config.temperature if config is not None else 0.0,
+        }
+        self.calls.append((messages, model, response_model, config, payload))
+        return ProviderResponse(
+            request_payload=request_payload,
+            raw_response=payload.get("raw_response", {}),
+            parsed_payload=payload.get("parsed_payload"),
+            usage=payload.get("usage"),
+            status_code=payload.get("status_code"),
+            error_code=payload.get("error_code"),
+            error_message=payload.get("error_message"),
+            discovered_models=payload.get("discovered_models"),
         )
 
 
@@ -448,6 +481,126 @@ def test_review_ambiguous_or_failed_case(tmp_path, decision: str, expected: str)
 
     assert review_result.status == expected
     assert review_result.review_output.decision == decision
+
+
+def test_review_runner_skips_on_parse_error(tmp_path):
+    proposal_prompt = make_prompt(tmp_path / "proposal", "Proposal")
+    review_prompt = make_prompt(tmp_path / "review", "Review")
+    proposal_task = TaskDefinition(
+        name="proposal_with_review",
+        description="proposal",
+        prompt_template_path=proposal_prompt,
+        response_model=RenameProposal,
+        provider_model="test",
+        review_policy=ReviewPolicy(
+            task=TaskDefinition(
+                name="review",
+                description="review",
+                prompt_template_path=review_prompt,
+                response_model=RenameReview,
+                provider_model="test",
+                validators=(EnumCaseNormalizer(field_values={"decision": ["pass", "fail", "uncertain"]}),),
+                prompt_context_builder=(
+                    lambda original_item, first_output: {
+                        "old_filename": original_item.source_id,
+                        "first_output": json.dumps(first_output),
+                    }
+                ),
+            ),
+            context_builder=lambda original_item, first_output: {
+                "old_filename": original_item.source_id,
+                "first_output": json.dumps(first_output),
+            },
+        ),
+        validators=(
+            TrimWhitespaceValidator(),
+            EnumCaseNormalizer(field_values={"kind": ["invoice", "legal", "other"]}),
+            FillDefaultsValidator(defaults={"notes": ""}),
+        ),
+    )
+
+    first_provider = ScriptedLLMProvider(
+        [
+            {
+                "parsed_payload": None,
+                "raw_response": {},
+                "error_code": "invalid_payload",
+                "error_message": "No parseable JSON payload found",
+                "status_code": 200,
+            }
+        ]
+    )
+    review_provider = ScriptedLLMProvider([])
+
+    first_runner = SingleInputRunner(
+        task=proposal_task,
+        provider=first_provider,
+        artifacts_root=tmp_path / "first_artifacts",
+    )
+    review_runner = SingleInputRunner(
+        task=proposal_task.review_policy.task,  # type: ignore[union-attr]
+        provider=review_provider,
+        artifacts_root=tmp_path / "review_artifacts",
+    )
+
+    input_file = tmp_path / "contract.txt"
+    input_file.write_text("contract source", encoding="utf-8")
+    first_result = first_runner.run(make_input(input_file))
+
+    review_result = ReviewRunner().run(
+        first_result=first_result,
+        original_item=make_input(input_file),
+        policy=proposal_task.review_policy,  # type: ignore[union-attr]
+        single_runner=review_runner,
+    )
+
+    assert review_result.status == "not_run"
+    assert review_result.review_status == "not_run"
+    assert review_provider.calls == []
+
+
+def test_actor_specificity_is_preserved_for_obvious_anchor(tmp_path):
+    text = "This email is from an Assistant Principal and is about course safety."
+    source_path = tmp_path / "2024-10-09-1925-ugel-Safety-Patrol.txt"
+    source_path.write_text(text, encoding="utf-8")
+    input_item = NormalizedInput(
+        source_id=source_path.as_posix(),
+        source_path=source_path,
+        media_type="text/plain",
+        decoded_text=text,
+    )
+    payload = {
+        "kind": "correspondence",
+        "actor": "principal",
+        "slug": "safety",
+        "confidence": 0.97,
+        "notes": "ok",
+    }
+
+    adjusted = normalize_proposal_output(payload, input_item)
+
+    assert adjusted["actor"] == "assistant principal"
+
+
+def test_confidence_lowered_when_anchors_are_ambiguous(tmp_path):
+    source_path = tmp_path / "2024-10-09-ptasummary.txt"
+    source_path.write_text("No clear date/time in filename and ambiguous sender info.", encoding="utf-8")
+    input_item = NormalizedInput(
+        source_id=source_path.as_posix(),
+        source_path=source_path,
+        media_type="text/plain",
+        decoded_text="No clear sender role is present.",
+    )
+    payload = {
+        "kind": "notes",
+        "actor": "sender",
+        "slug": "summary",
+        "confidence": 0.99,
+        "notes": "ok",
+    }
+
+    adjusted = normalize_proposal_output(payload, input_item)
+    assert adjusted["confidence"] <= 0.85
 
 
 def test_second_task_extensibility(tmp_path):

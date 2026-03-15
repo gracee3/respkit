@@ -17,6 +17,7 @@ from ..actions.base import Action
 
 PromptContextBuilder = Callable[[NormalizedInput], Mapping[str, Any]]
 ReviewContextBuilder = Callable[[NormalizedInput, Mapping[str, Any]], Mapping[str, Any]]
+OutputTransform = Callable[[dict[str, Any], NormalizedInput], dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ class TaskDefinition:
     input_mode: str = "text"
     min_input_chars: int | None = None
     prompt_context_builder: PromptContextBuilder = lambda input_obj: {"text": input_obj.decoded_text}
+    response_transforms: tuple[OutputTransform, ...] = ()
     review_policy: "ReviewPolicy | None" = None
 
     def normalized_provider_options(self) -> dict[str, Any]:

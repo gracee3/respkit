@@ -21,7 +21,11 @@ from respkit.runners import DirectoryBatchRunner, ReviewRunner, SingleInputRunne
 from respkit.tasks import ReviewPolicy, TaskDefinition
 from respkit.tasks.message import Message
 from respkit.validators import EnumCaseNormalizer, FillDefaultsValidator, TrimWhitespaceValidator
-from examples.rename_file_proposal.task import normalize_proposal_output, normalize_review_output
+from examples.rename_file_proposal.task import (
+    extract_anchors,
+    normalize_proposal_output,
+    normalize_review_output,
+)
 
 
 class FakeLLMProvider(LLMProvider):
@@ -631,6 +635,85 @@ def test_sender_anchor_prevents_recipient_override(tmp_path):
     adjusted = normalize_proposal_output(payload, input_item)
 
     assert adjusted["actor"] == "assistant principal"
+
+
+def test_reply_thread_current_sender_prevents_replied_content_override(tmp_path):
+    text = "\n".join(
+        [
+            "From: Janney Parents <parents@example.com>",
+            "Date: 2025-04-01",
+            "Dear Team,",
+            "The school follow-up is noted.",
+            "",
+            "On 2025-04-01 14:51:35 UTC, Principal Singh wrote:",
+            "> From: Assistant Principal, Janney School",
+            "> The issue was discussed.",
+        ]
+    )
+    source_path = tmp_path / "2025-04-01-1451-parent-update.txt"
+    source_path.write_text(text, encoding="utf-8")
+    input_item = NormalizedInput(
+        source_id=source_path.as_posix(),
+        source_path=source_path,
+        media_type="text/plain",
+        decoded_text=text,
+    )
+    payload = {
+        "kind": "correspondence",
+        "actor": "assistant principal",
+        "slug": "update",
+        "confidence": 0.97,
+        "notes": "ok",
+    }
+
+    adjusted = normalize_proposal_output(payload, input_item)
+
+    assert adjusted["actor"] == "parent"
+
+
+def test_candidate_time_prefers_filename_when_available(tmp_path):
+    text = "Meeting starts at 13:00 UTC and continues until 14:00."
+    source_path = tmp_path / "2025-04-04-2300-case.txt"
+    source_path.write_text(text, encoding="utf-8")
+
+    anchors = extract_anchors(source_path, text)
+    assert anchors["candidate_time"] == "23:00"
+
+
+def test_candidate_time_falls_back_to_body_when_filename_missing(tmp_path):
+    text = "Conversation timestamp: 2025-04-08T13:15:01 UTC."
+    source_path = tmp_path / "notes-file.txt"
+    source_path.write_text(text, encoding="utf-8")
+    anchors = extract_anchors(source_path, text)
+    assert anchors["candidate_time"] == "13:15"
+
+
+def test_confidence_reduced_for_mixed_actor_evidence(tmp_path):
+    text = "\n".join(
+        [
+            "From: Assistant Principal Smith",
+            "To: Principal, please review",
+            "Dear Principal,",
+        ]
+    )
+    source_path = tmp_path / "2025-04-02-mixed-evidence.txt"
+    source_path.write_text(text, encoding="utf-8")
+    input_item = NormalizedInput(
+        source_id=source_path.as_posix(),
+        source_path=source_path,
+        media_type="text/plain",
+        decoded_text=text,
+    )
+    payload = {
+        "kind": "correspondence",
+        "actor": "principal",
+        "slug": "mixed",
+        "confidence": 0.97,
+        "notes": "ok",
+    }
+
+    normalized = normalize_proposal_output(payload, input_item)
+    assert normalized["confidence"] <= 0.7
 
 
 @pytest.mark.parametrize(

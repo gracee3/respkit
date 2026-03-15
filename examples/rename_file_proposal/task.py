@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -31,14 +32,38 @@ def _first_alpha_token(filename: str) -> str | None:
 
 _TIME_PATTERNS = (r"\b(2[0-3]|[01]?[0-9]):[0-5][0-9]\b",)
 
+_HHMM_PATTERN = re.compile(r"\b(\d{1,2}):([0-5]\d)(?::[0-5]\d)?\s*(am|pm)?\b", re.IGNORECASE)
+_ISO_TIMESTAMP_PATTERN = re.compile(
+    r"\b(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})(?::\d{2})?(?:[+-]\d{2}:\d{2}|Z)?\b"
+)
+_QUOTED_TIME_PATTERN = re.compile(
+    r"\b(1[0-2]|0?\d):([0-5]\d)\s*(am|pm)\b",
+    re.IGNORECASE,
+)
+
+_THREAD_SEPARATOR_PATTERNS = (
+    re.compile(r"(?im)^\s*-{2,}\s*(original message|forwarded message)\s*-{2,}\s*$"),
+    re.compile(r"(?im)^On .+wrote:\s*$"),
+    re.compile(r"(?im)^>+\s*from:\s+"),
+)
+
 
 _ROLE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("assistant principal", (r"\bassistant\s+principal\b", r"\bprincipal\s+assistant\b", r"\bassistant\s*pr\.?\b", r"\basst\s+principal\b")),
     ("deputy principal", (r"\bdeputy\s+principal\b",)),
     ("vice principal", (r"\bvice\s+principal\b",)),
     ("assistant manager", (r"\bassistant\s+manager\b",)),
+    ("school counselor", (r"\bschool\s+counselor\b", r"\bcounselor\b")),
+    ("school psychologist", (r"\bschool\s+psychologist\b", r"\bpsychologist\b")),
     ("principal", (r"\bprincipal\b",)),
+    ("director", (r"\bdirector\b",)),
+    ("teacher", (r"\bteacher\b",)),
+    ("student", (r"\bstudent\b",)),
     ("pta", (r"\bpta\b",)),
+    ("care", (r"\bcare\b", r"\bcare\s+team\b")),
+    ("system", (r"\bsystem\b",)),
+    ("client", (r"\bclient\b",)),
+    ("parent", (r"\bparent\b", r"\bparents\b")),
 )
 
 _SENDER_PATTERNS = (
@@ -47,14 +72,40 @@ _SENDER_PATTERNS = (
 )
 
 _FIRST_PERSON_PATTERNS = (
-    r"(?im)\bI\s+am\s+the\s+([^\n,.;:]+)",
-    r"(?im)\bwe\s+are\s+the\s+([^\n,.;:]+)",
+    r"(?im)^\s*I\s+am\s+the\s+([^\n,.;:]+)",
+    r"(?im)^\s*We\s+are\s+the\s+([^\n,.;:]+)",
+    r"(?im)^\s*I\s+wrote\s+as\s+([^\n,.;:]+)",
 )
 
 _RECIPIENT_PATTERNS = (
     r"(?im)^\s*dear\s+([^\n,]+)",
     r"(?im)^\s*(?:to|cc|bcc|recipient)\s*:\s*([^\n]+)",
 )
+
+
+def _normalize_actor_text(raw: str) -> str | None:
+    text = re.sub(r"<[^>]+>", " ", raw)
+    text = re.sub(r"\b[\w\.-]+@[\w\.-]+\.\w+\b", " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" \"'<>")
+    if not text:
+        return None
+    lowered = text.lower()
+    if lowered in {"", "n/a", "na", "none"}:
+        return None
+    return lowered
+
+
+def _find_role_anchor(actor_text: str) -> str | None:
+    if not actor_text:
+        return None
+
+    lowered = actor_text.lower()
+    for canonical, patterns in _ROLE_PATTERNS:
+        for pattern in patterns:
+            if re.search(pattern, lowered):
+                return canonical
+
+    return _normalize_actor_text(raw=actor_text)
 
 
 def _find_role_in_text(text: str) -> str | None:
@@ -66,34 +117,185 @@ def _find_role_in_text(text: str) -> str | None:
     return None
 
 
-def _extract_actor_candidate(path: Path | None, text: str) -> str | None:
+def _split_current_text(text: str) -> tuple[str, str]:
+    earliest = None
+    for pattern in _THREAD_SEPARATOR_PATTERNS:
+        match = pattern.search(text)
+        if match and (earliest is None or match.start() < earliest):
+            earliest = match.start()
+    if earliest is None:
+        return text, ""
+    return text[:earliest].rstrip(), text[earliest:].lstrip()
+
+
+def _normalize_role(text: str) -> str:
+    return text.strip(" -_").lower()
+
+
+def _is_more_specific_role(current_actor: str, candidate_actor: str) -> bool:
+    if current_actor == candidate_actor:
+        return False
+
+    specificity_hierarchy = {
+        "principal": 10,
+        "assistant principal": 20,
+        "vice principal": 18,
+        "deputy principal": 18,
+        "director": 14,
+        "care": 12,
+        "teacher": 8,
+        "school counselor": 9,
+        "school psychologist": 9,
+        "parent": 11,
+        "system": 6,
+        "client": 6,
+        "student": 7,
+    }
+    current_value = specificity_hierarchy.get(_normalize_role(current_actor), 0)
+    candidate_value = specificity_hierarchy.get(_normalize_role(candidate_actor), 0)
+    if candidate_value > current_value:
+        return True
+
+    return len(candidate_actor) > len(current_actor)
+
+
+def _extract_actor_signals(
+    path: Path | None,
+    text: str,
+) -> tuple[str, str, list[str], bool]:
+    current_text, _ = _split_current_text(text)
+    signals = OrderedDict[str, str]()
+    thread_ambiguous = _split_current_text(text)[1] != ""
+
+    def _add_signal(source: str, value: str | None) -> None:
+        if not value:
+            return
+        if source in signals:
+            return
+        signals[source] = value
+
     if path is not None:
         filename_actor = _find_role_in_text(path.name.replace("-", " ").replace("_", " "))
         if filename_actor:
-            return filename_actor
+            _add_signal("filename", filename_actor)
 
     for pattern in _SENDER_PATTERNS:
-        match = re.search(pattern, text)
+        match = re.search(pattern, current_text)
         if match:
-            actor = _find_role_in_text(match.group(1))
+            actor = _find_role_anchor(match.group(1))
             if actor:
-                return actor
+                _add_signal("sender", actor)
+                break
 
     for pattern in _FIRST_PERSON_PATTERNS:
-        match = re.search(pattern, text)
+        match = re.search(pattern, current_text)
         if match:
-            actor = _find_role_in_text(match.group(0))
+            actor = _find_role_anchor(match.group(1))
             if actor:
-                return actor
+                _add_signal("first_person", actor)
+                break
 
     for pattern in _RECIPIENT_PATTERNS:
-        match = re.search(pattern, text)
+        match = re.search(pattern, current_text)
         if match:
-            actor = _find_role_in_text(match.group(1))
+            actor = _find_role_anchor(match.group(1))
             if actor:
-                return actor
+                _add_signal("recipient", actor)
+                break
 
-    return _find_role_in_text(text)
+    body_actor = _find_role_in_text(current_text)
+    if body_actor:
+        _add_signal("body", body_actor)
+
+    actor_anchor_sources = list(signals.keys())
+    actor_anchor: str | None = None
+    actor_anchor_source: str | None = None
+    for source in ("filename", "sender", "first_person", "recipient", "body"):
+        if source in signals:
+            actor_anchor = signals[source]
+            actor_anchor_source = source
+            break
+
+    if actor_anchor is None:
+        actor_anchor = None
+        actor_anchor_source = None
+
+    actor_evidence_values = list(signals.values())
+    mixed_actor_evidence = len(set(actor_evidence_values)) > 1
+    return actor_anchor or "", actor_anchor_source or "", actor_evidence_values, mixed_actor_evidence
+
+
+def _extract_time_from_text(text: str) -> str | None:
+    match = _ISO_TIMESTAMP_PATTERN.search(text)
+    if match:
+        hour = int(match.group(2))
+        minute = int(match.group(3))
+        return f"{hour:02d}:{minute:02d}"
+
+    match = _HHMM_PATTERN.search(text)
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        if match.group(3):
+            am_pm = match.group(3).lower()
+            if am_pm == "pm" and hour != 12:
+                hour += 12
+            elif am_pm == "am" and hour == 12:
+                hour = 0
+        return f"{hour:02d}:{minute:02d}"
+
+    match = _QUOTED_TIME_PATTERN.search(text)
+    if match:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        am_pm = match.group(3).lower()
+        if am_pm == "pm" and hour != 12:
+            hour += 12
+        elif am_pm == "am" and hour == 12:
+            hour = 0
+        return f"{hour:02d}:{minute:02d}"
+
+    return None
+
+
+def _extract_time_from_filename(filename: str) -> str | None:
+    for candidate in (_first(_TIME_PATTERNS[0], filename),):
+        if candidate:
+            return candidate
+
+    parts = re.split(r"[^0-9]", filename)
+    for index, part in enumerate(parts):
+        if len(part) != 4:
+            continue
+        part_value = int(part)
+        if index == 0 and 1900 <= part_value <= 2099:
+            continue
+        hour = part_value // 100
+        minute = part_value % 100
+        if hour <= 23 and minute <= 59:
+            return f"{hour:02d}:{minute:02d}"
+        if 1900 <= part_value <= 2099 and index != 0:
+            continue
+    return None
+
+
+def _confidence_cap_for_actor_evidence(
+    confidence: float,
+    actor_anchor_source: str,
+    actor_evidence_count: int,
+    mixed_actor_evidence: bool,
+    thread_ambiguous: bool,
+) -> float:
+    cap = 1.0
+    if actor_anchor_source in {"recipient", "body"}:
+        cap = min(cap, 0.75)
+    if mixed_actor_evidence:
+        cap = min(cap, 0.7)
+    if actor_evidence_count > 1:
+        cap = min(cap, 0.8)
+    if thread_ambiguous:
+        cap = min(cap, 0.8)
+    return min(confidence, cap)
 
 
 def _first_time(text: str) -> str | None:
@@ -121,17 +323,29 @@ def extract_anchors(path: Path | None, text: str) -> dict[str, str | None]:
     """Extract deterministic metadata from filename and text."""
 
     old_filename = path.name if path else ""
+    actor_anchor, actor_anchor_source, actor_values, mixed_actor_evidence = _extract_actor_signals(path, text)
+    filename_time = _extract_time_from_filename(old_filename)
+    candidate_time = filename_time if filename_time else _extract_time_from_text(text)
+    _, thread_tail = _split_current_text(text)
     return {
         "old_filename": old_filename,
         "source_token": _first_alpha_token(old_filename) or "",
         "candidate_date": _first(r"\d{4}-\d{2}-\d{2}|\d{8}", old_filename),
-        "candidate_time": _first_time(old_filename),
-        "actor_anchor": _extract_actor_candidate(path, text),
+        "candidate_time": candidate_time,
+        "actor_anchor": actor_anchor,
+        "actor_anchor_source": actor_anchor_source,
+        "actor_values": ",".join(actor_values),
+        "thread_reply_detected": str(bool(thread_tail)),
+        "actor_evidence_mixed": str(mixed_actor_evidence),
         "text": text,
     }
 
 
-def _canonicalize_actor(raw_actor: str, actor_anchor: str | None) -> str:
+def _canonicalize_actor(
+    raw_actor: str,
+    actor_anchor: str | None,
+    actor_anchor_source: str,
+) -> str:
     actor = raw_actor.strip().lower()
     if not actor:
         return actor
@@ -146,11 +360,27 @@ def _canonicalize_actor(raw_actor: str, actor_anchor: str | None) -> str:
         if actor == alias:
             return canonical
 
-    if actor_anchor and actor == "principal" and actor_anchor != "principal":
-        return actor_anchor
-    if actor_anchor and actor in {"ap", "a principal", "asst principal", "assistant principal"}:
-        if actor_anchor != "principal":
+    if not actor_anchor:
+        return actor
+
+    if actor_anchor_source in {"sender", "first_person"}:
+        if actor_anchor not in {"", actor} and (
+            actor in {"principal", "teacher", "parent", "system", "care", "client", "director", "student", "assistant principal"}
+            or actor in {"assistant principal", "principal"} and actor_anchor in {"assistant principal", "vice principal", "deputy principal"}
+        ):
             return actor_anchor
+
+    if actor_anchor_source == "filename":
+        if actor_anchor in {"assistant principal", "vice principal", "deputy principal", "principal", "director", "teacher", "parent", "student"}:
+            if actor in {"principal", "assistant principal", "teacher", "parent", "system", "care", "client", "director", "student"}:
+                return actor_anchor
+
+    if actor_anchor_source == "body":
+        if actor in {"principal"} and actor_anchor in {"assistant principal", "vice principal", "deputy principal"}:
+            return actor_anchor
+
+    if actor_anchor_source in {"sender", "first_person", "filename"} and _is_more_specific_role(actor, actor_anchor):
+        return actor_anchor
 
     return actor
 
@@ -175,6 +405,19 @@ def _calibrate_confidence(payload: dict[str, Any], anchors: dict[str, str | None
     if anchors.get("actor_anchor") is None and confidence_value > 0.9:
         confidence_value = 0.9
 
+    actor_anchor_source = (anchors.get("actor_anchor_source") or "").strip().lower()
+    actor_values = anchors.get("actor_values") or ""
+    actor_value_count = len([value for value in actor_values.split(",") if value]) if actor_values else 0
+    mixed_actor_evidence = str(anchors.get("actor_evidence_mixed")).strip().lower() in {"1", "true", "yes"}
+    thread_ambiguous = str(anchors.get("thread_reply_detected")).strip().lower() in {"1", "true", "yes"}
+    confidence_value = _confidence_cap_for_actor_evidence(
+        confidence_value,
+        actor_anchor_source,
+        actor_value_count,
+        mixed_actor_evidence,
+        thread_ambiguous,
+    )
+
     return confidence_value
 
 
@@ -185,7 +428,11 @@ def normalize_proposal_output(payload: dict[str, Any], item: NormalizedInput) ->
     output = dict(payload)
 
     if "actor" in output and isinstance(output.get("actor"), str):
-        output["actor"] = _canonicalize_actor(output["actor"], anchors.get("actor_anchor"))
+        output["actor"] = _canonicalize_actor(
+            output["actor"],
+            anchors.get("actor_anchor"),
+            (anchors.get("actor_anchor_source") or ""),
+        )
     if "confidence" in output:
         output["confidence"] = _calibrate_confidence(output, anchors)
     return output

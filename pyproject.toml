@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "respkit"
+version = "0.1.0"
+description = "Minimal reusable SDK for structured LLM task execution over normalized inputs."
+requires-python = ">=3.11"
+readme = "README.md"
+dependencies = [
+  "pydantic>=2.8,<3",
+  "httpx>=0.27"
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2"]
+
+[tool.pytest.ini_options]
+addopts = ["-q"]

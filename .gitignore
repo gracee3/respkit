@@ -1,0 +1,55 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Test/runtime caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Packaging/build outputs
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+Pipfile.lock
+poetry.lock
+
+# Environment and local config
+.env
+.env.*
+venv/
+.venv/
+ENV/
+env/
+.python-version
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+
+# IDE / editor files
+.idea/
+.vscode/
+.vscode-test/
+*.swp
+*~
+
+# Notebook outputs
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+
+# Local SDK outputs and scratch data
+data/
+.respkit_runs/
+.respkit_*

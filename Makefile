@@ -101,6 +101,14 @@ run-gpt-balanced:
 		MAX_MODEL_LEN=16384 \
 		EXTRA_ARGS="--max-num-seqs 4 --max-num-batched-tokens 4096"
 
+run-gpt-parallel:
+	$(MAKE) run-llm \
+		GPU=1 \
+		TP_SIZE=1 \
+		GPU_MEM_UTIL=0.92 \
+		MAX_MODEL_LEN=16384 \
+		EXTRA_ARGS="--max-num-seqs 8 --max-num-batched-tokens 8192"
+
 run-gpt-32k:
 	$(MAKE) run-llm \
 		GPU=1 \
@@ -229,6 +237,10 @@ SMOKE_ENDPOINT ?= http://localhost:8000/v1/responses
 SMOKE_OUT ?= .respkit_smoke
 SMOKE_INPUT_DIR ?= tests/fixtures/rename_inputs
 SMOKE_INPUT_FILE ?= $(SMOKE_INPUT_DIR)/clean_easy.txt
+SMOKE_MAX_CONCURRENCY ?= 1
+SMOKE_REVIEW_MAX_CONCURRENCY ?= 1
+SMOKE_PROVIDER_TIMEOUT ?= 30
+SMOKE_REVIEW ?=
 CORPUS_DIR ?= tests/fixtures/rename_inputs
 CORPUS_FORMAT ?= csv
 CORPUS_EXPORT ?=
@@ -236,12 +248,12 @@ CORPUS_EXPORT ?=
 smoke-single:
 	@rm -rf $(SMOKE_OUT)
 	@mkdir -p $(SMOKE_OUT)
-	@python3 -m examples.run_rename_proposal single $(SMOKE_INPUT_FILE) --endpoint $(SMOKE_ENDPOINT) --out $(SMOKE_OUT)
+	@python3 -m examples.run_rename_proposal single $(SMOKE_INPUT_FILE) --endpoint $(SMOKE_ENDPOINT) --out $(SMOKE_OUT) --provider-timeout $(SMOKE_PROVIDER_TIMEOUT) $(if $(SMOKE_REVIEW),--review,)
 
 smoke-batch:
 	@rm -rf $(SMOKE_OUT)
 	@mkdir -p $(SMOKE_OUT)
-	@python3 -m examples.run_rename_proposal batch $(SMOKE_INPUT_DIR) --endpoint $(SMOKE_ENDPOINT) --out $(SMOKE_OUT)
+	@python3 -m examples.run_rename_proposal batch $(SMOKE_INPUT_DIR) --endpoint $(SMOKE_ENDPOINT) --out $(SMOKE_OUT) --max-concurrency $(SMOKE_MAX_CONCURRENCY) --review-max-concurrency $(SMOKE_REVIEW_MAX_CONCURRENCY) --provider-timeout $(SMOKE_PROVIDER_TIMEOUT) $(if $(SMOKE_REVIEW),--review,)
 
 smoke:
 	@$(MAKE) smoke-single

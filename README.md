@@ -79,6 +79,24 @@ python -m examples.run_rename_proposal batch /path/to/text-directory --endpoint 
 
 You can add `--review` to perform the optional second-pass review with the companion task.
 
+Common tuning flags:
+
+- `--max-concurrency N` (proposal phase batch parallelism)
+- `--review-max-concurrency N` (review phase parallelism; default `1`)
+- `--provider-timeout S` (provider request timeout in seconds)
+
+Example tuned run:
+
+```bash
+python -m examples.run_rename_proposal batch /path/to/files \
+  --endpoint http://localhost:8000/v1/responses \
+  --out .respkit_demo \
+  --review \
+  --max-concurrency 8 \
+  --review-max-concurrency 4 \
+  --provider-timeout 30
+```
+
 ## Local smoke test
 
 Use the fixtures in `tests/fixtures/rename_inputs/` and run against a local endpoint:
@@ -95,6 +113,7 @@ You can override:
 
 ```bash
 make smoke-single SMOKE_ENDPOINT=http://localhost:8000/v1/responses SMOKE_OUT=tmp/smoke
+make smoke-batch SMOKE_MAX_CONCURRENCY=8 SMOKE_REVIEW_MAX_CONCURRENCY=4 SMOKE_PROVIDER_TIMEOUT=30 SMOKE_REVIEW=1 SMOKE_OUT=tmp/smoke
 ```
 
 ## Stable run statuses
@@ -205,6 +224,7 @@ Run directory batches with bounded concurrency:
 
 ```bash
 python -m examples.run_rename_proposal batch /path/to/files --max-concurrency 4
+python -m examples.run_rename_proposal batch /path/to/files --max-concurrency 8 --review --review-max-concurrency 4
 ```
 
 Start with `2` or `4`, then increase cautiously and monitor local endpoint stability.

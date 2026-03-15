@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 from pathlib import Path
+from typing import Iterable
 
 from respkit.artifacts import ArtifactWriter
 from respkit.manifest import ManifestWriter
 from respkit.providers.openai_compatible import OpenAICompatibleProvider
+from respkit.utils import list_text_files
 from respkit.runners import SingleInputRunner, DirectoryBatchRunner, ReviewRunner
 from respkit.utils.filesystem import read_text_file
 from respkit.inputs import NormalizedInput
+from respkit.tasks.result import ReviewExecutionResult
 from examples.rename_file_proposal import build_tasks
 
 
@@ -43,8 +47,83 @@ def _annotate_review_not_run(first_result, reason: str) -> None:
     run_metadata_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def run_single(input_path: Path, endpoint: str, output_dir: Path, with_review: bool) -> None:
-    proposal_task, review_task = build_tasks(manifest_writer=None, model_name="gpt-oss-20b")
+def _build_review_input(path: Path, source_text: str | None = None) -> NormalizedInput:
+    decoded_text = source_text if source_text is not None else read_text_file(path)
+    return NormalizedInput(
+        source_id=path.as_posix(),
+        source_path=path,
+        media_type="text/plain",
+        decoded_text=decoded_text,
+    )
+
+
+async def _run_review_item(
+    original: Path,
+    first_result,
+    review_policy,
+    reviewer: SingleInputRunner,
+    semaphore: asyncio.Semaphore,
+) -> ReviewExecutionResult | str:
+    async with semaphore:
+        if first_result.status != "success":
+            reason = f"first-pass status was {first_result.status}; review requires success"
+            _annotate_review_not_run(first_result, reason)
+            return "not_run"
+
+        review_input = _build_review_input(original)
+        review_result = await asyncio.to_thread(
+            ReviewRunner().run,
+            first_result=first_result,
+            original_item=review_input,
+            policy=review_policy,
+            single_runner=reviewer,
+        )
+        return review_result
+
+
+def run_review_batch(
+    directory: Path,
+    first_results: list,
+    reviewer: SingleInputRunner,
+    review_policy,
+    review_max_concurrency: int = 1,
+) -> list[tuple[str, str]]:
+    def _build_review_inputs() -> Iterable[tuple[Path, object]]:
+        by_source = {result.source_id: result for result in first_results}
+        for path in list_text_files(directory):
+            first_result = by_source.get(path.as_posix())
+            if first_result is None:
+                continue
+            yield path, first_result
+
+    async def _run_all() -> list[tuple[str, str]]:
+        semaphore = asyncio.Semaphore(max(1, review_max_concurrency))
+
+        async def _run_one(item: tuple[Path, object]) -> tuple[str, str]:
+            path, first_result = item
+            result = await _run_review_item(
+                original=path,
+                first_result=first_result,
+                review_policy=review_policy,
+                reviewer=reviewer,
+                semaphore=semaphore,
+            )
+            if isinstance(result, str):
+                return path.name, result
+            return path.name, result.status
+
+        tasks = [_run_one(item) for item in _build_review_inputs()]
+        return await asyncio.gather(*tasks)
+
+    return asyncio.run(_run_all())
+
+
+def run_single(input_path: Path, endpoint: str, output_dir: Path, with_review: bool, provider_timeout: float = 30.0) -> None:
+    proposal_task, review_task = build_tasks(
+        manifest_writer=None,
+        model_name="gpt-oss-20b",
+        provider_timeout=provider_timeout,
+    )
     manifest_path = output_dir / "manifest.jsonl"
     runner = _build_runner(endpoint, output_dir, proposal_task, manifest_path)
     normalized = NormalizedInput(
@@ -56,8 +135,8 @@ def run_single(input_path: Path, endpoint: str, output_dir: Path, with_review: b
     first = runner.run(normalized)
 
     if with_review:
+        reviewer = _build_runner(endpoint, output_dir, review_task, manifest_path)
         if first.status == "success":
-            reviewer = _build_runner(endpoint, output_dir, review_task, manifest_path)
             review_result = ReviewRunner().run(first, normalized, proposal_task.review_policy, reviewer)
             print(f"Single run review status: {review_result.status}")
         else:
@@ -67,35 +146,37 @@ def run_single(input_path: Path, endpoint: str, output_dir: Path, with_review: b
     print(f"Single run status: {first.status}, artifacts: {first.artifacts_dir}")
 
 
-def run_batch(directory: Path, endpoint: str, output_dir: Path, with_review: bool, *, max_concurrency: int = 1) -> None:
-    proposal_task, review_task = build_tasks(manifest_writer=None, model_name="gpt-oss-20b")
+def run_batch(
+    directory: Path,
+    endpoint: str,
+    output_dir: Path,
+    with_review: bool,
+    *,
+    max_concurrency: int = 1,
+    review_max_concurrency: int = 1,
+    provider_timeout: float = 30.0,
+) -> None:
+    proposal_task, review_task = build_tasks(
+        manifest_writer=None,
+        model_name="gpt-oss-20b",
+        provider_timeout=provider_timeout,
+    )
     manifest_path = output_dir / "manifest.jsonl"
     first_runner = _build_runner(endpoint, output_dir, proposal_task, manifest_path)
     batch = DirectoryBatchRunner(single_runner=first_runner, max_concurrency=max_concurrency)
     first_results = batch.run(directory)
 
     if with_review:
-        files = sorted(p for p in directory.iterdir() if p.is_file())
         reviewer = _build_runner(endpoint, output_dir, review_task, manifest_path)
-        for original, first_result in zip(files, first_results):
-            review_input = NormalizedInput(
-                source_id=str(original),
-                source_path=original,
-                media_type="text/plain",
-                decoded_text=read_text_file(original),
-            )
-            if first_result.status != "success":
-                reason = f"first-pass status was {first_result.status}; review requires success"
-                _annotate_review_not_run(first_result, reason)
-                print(f"review status for {original.name}: not_run ({reason})")
-                continue
-            review_run = ReviewRunner().run(
-                first_result=first_result,
-                original_item=review_input,
-                policy=proposal_task.review_policy,
-                single_runner=reviewer,
-            )
-            print(f"review status for {original.name}: {review_run.status}")
+        results = run_review_batch(
+            directory=directory,
+            first_results=first_results,
+            reviewer=reviewer,
+            review_policy=proposal_task.review_policy,
+            review_max_concurrency=review_max_concurrency,
+        )
+        for filename, review_status in results:
+            print(f"review status for {filename}: {review_status}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -105,6 +186,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--endpoint", default="http://localhost:8000/v1/responses", help="OpenAI-compatible Responses endpoint")
     parser.add_argument("--out", default=".respkit_examples", help="Artifact root")
     parser.add_argument("--max-concurrency", type=int, default=1, help="Max concurrent file runs in batch mode")
+    parser.add_argument("--review-max-concurrency", type=int, default=1, help="Max concurrent review runs when --review is set")
+    parser.add_argument(
+        "--provider-timeout",
+        type=float,
+        default=30.0,
+        help="Provider timeout seconds for this run",
+    )
     parser.add_argument("--review", action="store_true", help="Run optional review pass")
     return parser.parse_args()
 
@@ -116,9 +204,17 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if args.mode == "single":
-        run_single(path, args.endpoint, output_dir, args.review)
+        run_single(path, args.endpoint, output_dir, args.review, provider_timeout=args.provider_timeout)
     else:
-        run_batch(path, args.endpoint, output_dir, args.review, max_concurrency=args.max_concurrency)
+        run_batch(
+            path,
+            args.endpoint,
+            output_dir,
+            args.review,
+            max_concurrency=args.max_concurrency,
+            review_max_concurrency=args.review_max_concurrency,
+            provider_timeout=args.provider_timeout,
+        )
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from respkit.actions import AppendManifestAction, WriteMarkdownAction
 from respkit.actions.base import ActionContext
 from respkit.inputs import NormalizedInput
 from respkit.manifest import ManifestWriter
+from respkit.providers import ProviderConfig
 from respkit.tasks import ReviewPolicy, TaskDefinition
 from respkit.validators import EnumCaseNormalizer, FillDefaultsValidator, TrimWhitespaceValidator
 from .schemas import RenameProposalOutput, RenameReviewOutput
@@ -517,12 +518,14 @@ def build_tasks(
     prompt_root: Path | None = None,
     manifest_writer: ManifestWriter | None = None,
     model_name: str = "gpt-oss-20b",
+    provider_timeout: float = 30.0,
 ) -> tuple[TaskDefinition, TaskDefinition]:
     """Return (first-pass task, review task)."""
 
     prompt_root = prompt_root or (Path(__file__).resolve().parent / "prompts")
     proposal_prompt = prompt_root / "rename_file_proposal.md"
     review_prompt = prompt_root / "rename_file_review.md"
+    provider_config = ProviderConfig(timeout_s=provider_timeout)
 
     actions = [WriteMarkdownAction(filename="proposal_row.md", content_builder=_proposal_markdown)]
     if manifest_writer is not None:
@@ -534,6 +537,7 @@ def build_tasks(
         prompt_template_path=review_prompt,
         response_model=RenameReviewOutput,
         provider_model=model_name,
+        provider_config=provider_config,
         validators=(
             TrimWhitespaceValidator(),
             EnumCaseNormalizer(field_values={"decision": ["pass", "fail", "uncertain"]}),
@@ -549,6 +553,7 @@ def build_tasks(
         prompt_template_path=proposal_prompt,
         response_model=RenameProposalOutput,
         provider_model=model_name,
+        provider_config=provider_config,
         min_input_chars=20,
         validators=(
             TrimWhitespaceValidator(),

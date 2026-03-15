@@ -12,9 +12,16 @@ First pass output:
 Document text:
 {text}
 
-Return strict JSON with:
+Return exactly one JSON object and nothing else.
+No markdown fences, prose, comments, preamble, or trailing text.
+
+The JSON must contain:
 - decision: "pass", "fail", or "uncertain"
 - notes: short review notes
-- recommended_adjustments: optional adjustment recommendation
+- recommended_adjustments: string containing optional adjustment recommendation
 
-Only return JSON.
+{{
+  "decision": "pass",
+  "notes": "Review notes.",
+  "recommended_adjustments": "Optional adjustment text."
+}}

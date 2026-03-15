@@ -29,20 +29,71 @@ def _first_alpha_token(filename: str) -> str | None:
     return None
 
 
-_TIME_PATTERNS = (
-    r"\b(2[0-3]|[01]?[0-9]):[0-5][0-9]\b",
+_TIME_PATTERNS = (r"\b(2[0-3]|[01]?[0-9]):[0-5][0-9]\b",)
+
+
+_ROLE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("assistant principal", (r"\bassistant\s+principal\b", r"\bprincipal\s+assistant\b", r"\bassistant\s*pr\.?\b", r"\basst\s+principal\b")),
+    ("deputy principal", (r"\bdeputy\s+principal\b",)),
+    ("vice principal", (r"\bvice\s+principal\b",)),
+    ("assistant manager", (r"\bassistant\s+manager\b",)),
+    ("principal", (r"\bprincipal\b",)),
+    ("pta", (r"\bpta\b",)),
+)
+
+_SENDER_PATTERNS = (
+    r"(?im)^\s*(?:from|sender|sent\s+by)\s*:\s*([^\n]+)$",
+    r"(?im)^\s*signature\s*:\s*([^\n]+)$",
+)
+
+_FIRST_PERSON_PATTERNS = (
+    r"(?im)\bI\s+am\s+the\s+([^\n,.;:]+)",
+    r"(?im)\bwe\s+are\s+the\s+([^\n,.;:]+)",
+)
+
+_RECIPIENT_PATTERNS = (
+    r"(?im)^\s*dear\s+([^\n,]+)",
+    r"(?im)^\s*(?:to|cc|bcc|recipient)\s*:\s*([^\n]+)",
 )
 
 
-_ACTOR_CANONICAL_PATTERNS = (
-    ("assistant principal", r"\bassistant\s*principal\b"),
-    ("assistant manager", r"\bassistant\s*manager\b"),
-    ("deputy principal", r"\bdeputy\s*principal\b"),
-    ("vice principal", r"\bvice\s*principal\b"),
-    ("principal", r"\bprincipal\b"),
-    ("assistant principal", r"\bprincipal\s+assistant\b"),
-    ("pta", r"\bpta\b"),
-)
+def _find_role_in_text(text: str) -> str | None:
+    lowered = text.lower()
+    for canonical, patterns in _ROLE_PATTERNS:
+        for pattern in patterns:
+            if re.search(pattern, lowered):
+                return canonical
+    return None
+
+
+def _extract_actor_candidate(path: Path | None, text: str) -> str | None:
+    if path is not None:
+        filename_actor = _find_role_in_text(path.name.replace("-", " ").replace("_", " "))
+        if filename_actor:
+            return filename_actor
+
+    for pattern in _SENDER_PATTERNS:
+        match = re.search(pattern, text)
+        if match:
+            actor = _find_role_in_text(match.group(1))
+            if actor:
+                return actor
+
+    for pattern in _FIRST_PERSON_PATTERNS:
+        match = re.search(pattern, text)
+        if match:
+            actor = _find_role_in_text(match.group(0))
+            if actor:
+                return actor
+
+    for pattern in _RECIPIENT_PATTERNS:
+        match = re.search(pattern, text)
+        if match:
+            actor = _find_role_in_text(match.group(1))
+            if actor:
+                return actor
+
+    return _find_role_in_text(text)
 
 
 def _first_time(text: str) -> str | None:
@@ -66,14 +117,6 @@ def _first_time(text: str) -> str | None:
     return None
 
 
-def _extract_actor_anchor(text: str) -> str | None:
-    lowered = text.lower()
-    for canonical, pattern in _ACTOR_CANONICAL_PATTERNS:
-        if re.search(pattern, lowered):
-            return canonical
-    return None
-
-
 def extract_anchors(path: Path | None, text: str) -> dict[str, str | None]:
     """Extract deterministic metadata from filename and text."""
 
@@ -83,7 +126,7 @@ def extract_anchors(path: Path | None, text: str) -> dict[str, str | None]:
         "source_token": _first_alpha_token(old_filename) or "",
         "candidate_date": _first(r"\d{4}-\d{2}-\d{2}|\d{8}", old_filename),
         "candidate_time": _first_time(old_filename),
-        "actor_anchor": _extract_actor_anchor(f"{old_filename} {text}"),
+        "actor_anchor": _extract_actor_candidate(path, text),
         "text": text,
     }
 
@@ -105,8 +148,9 @@ def _canonicalize_actor(raw_actor: str, actor_anchor: str | None) -> str:
 
     if actor_anchor and actor == "principal" and actor_anchor != "principal":
         return actor_anchor
-    if actor in {"ap", "a principal", "asst principal"} and actor_anchor:
-        return actor_anchor
+    if actor_anchor and actor in {"ap", "a principal", "asst principal", "assistant principal"}:
+        if actor_anchor != "principal":
+            return actor_anchor
 
     return actor
 
@@ -144,6 +188,33 @@ def normalize_proposal_output(payload: dict[str, Any], item: NormalizedInput) ->
         output["actor"] = _canonicalize_actor(output["actor"], anchors.get("actor_anchor"))
     if "confidence" in output:
         output["confidence"] = _calibrate_confidence(output, anchors)
+    return output
+
+
+def _normalize_review_adjustment_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _normalize_review_adjustment_value(value[key]) for key in sorted(value.keys())}
+    if isinstance(value, list):
+        return [_normalize_review_adjustment_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_normalize_review_adjustment_value(item) for item in value]
+    if isinstance(value, set):
+        return [_normalize_review_adjustment_value(item) for item in sorted(value)]
+    if value is None:
+        return ""
+    return value
+
+
+def normalize_review_output(payload: dict[str, Any], _: NormalizedInput) -> dict[str, Any]:
+    """Normalize review output field types without adding semantic assumptions."""
+
+    output = dict(payload)
+    adjustments = output.get("recommended_adjustments")
+    if adjustments is None:
+        output["recommended_adjustments"] = ""
+    elif not isinstance(adjustments, str):
+        normalized = _normalize_review_adjustment_value(adjustments)
+        output["recommended_adjustments"] = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
     return output
 
 
@@ -221,6 +292,7 @@ def build_tasks(
             EnumCaseNormalizer(field_values={"decision": ["pass", "fail", "uncertain"]}),
             FillDefaultsValidator(defaults={"recommended_adjustments": ""}),
         ),
+        response_transforms=(normalize_review_output,),
         prompt_context_builder=build_review_prompt_context,
     )
 

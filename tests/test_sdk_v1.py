@@ -21,7 +21,7 @@ from respkit.runners import DirectoryBatchRunner, ReviewRunner, SingleInputRunne
 from respkit.tasks import ReviewPolicy, TaskDefinition
 from respkit.tasks.message import Message
 from respkit.validators import EnumCaseNormalizer, FillDefaultsValidator, TrimWhitespaceValidator
-from examples.rename_file_proposal.task import normalize_proposal_output
+from examples.rename_file_proposal.task import normalize_proposal_output, normalize_review_output
 
 
 class FakeLLMProvider(LLMProvider):
@@ -603,6 +603,57 @@ def test_confidence_lowered_when_anchors_are_ambiguous(tmp_path):
     assert adjusted["confidence"] <= 0.85
 
 
+def test_sender_anchor_prevents_recipient_override(tmp_path):
+    text = "\n".join(
+        [
+            "From: Assistant Principal Sam",
+            "Date: 2024-05-10",
+            "Dear Principal,",
+            "The memo for safety staffing is attached.",
+        ]
+    )
+    source_path = tmp_path / "2024-05-10-notice.txt"
+    source_path.write_text(text, encoding="utf-8")
+    input_item = NormalizedInput(
+        source_id=source_path.as_posix(),
+        source_path=source_path,
+        media_type="text/plain",
+        decoded_text=text,
+    )
+    payload = {
+        "kind": "correspondence",
+        "actor": "principal",
+        "slug": "safety",
+        "confidence": 0.97,
+        "notes": "ok",
+    }
+
+    adjusted = normalize_proposal_output(payload, input_item)
+
+    assert adjusted["actor"] == "assistant principal"
+
+
+@pytest.mark.parametrize(
+    "adjustments, expected_fragment",
+    [
+        ({"action": "tighten"}, '"action"'),
+        (["rename", "review"], "["),
+    ],
+)
+def test_review_recommended_adjustments_are_normalized(adjustments, expected_fragment):
+    payload = {"decision": "pass", "notes": "ok", "recommended_adjustments": adjustments}
+    input_item = NormalizedInput(
+        source_id="review-test",
+        source_path=Path("review-test.txt"),
+        media_type="text/plain",
+        decoded_text="review text",
+    )
+    normalized = normalize_review_output(payload, input_item)
+    assert isinstance(normalized["recommended_adjustments"], str)
+    assert expected_fragment in normalized["recommended_adjustments"]
+    assert normalized["recommended_adjustments"] != ""
+
+
 def test_second_task_extensibility(tmp_path):
     prompt_path = make_prompt(tmp_path / "second", "Second task")
     payload = {"language": "EN", "paragraph_count": 7, "notes": "ok"}
@@ -634,3 +685,57 @@ def test_second_task_extensibility(tmp_path):
     assert result.validated_output.language == "en"
     rows = [json.loads(line) for line in (tmp_path / "manifest.jsonl").read_text(encoding="utf-8").splitlines()]
     assert rows and rows[0]["task_name"] == "summary_task"
+
+
+def test_evaluate_corpus_reads_existing_artifacts_without_provider_calls(tmp_path, monkeypatch):
+    from scripts import evaluate_corpus
+
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    input_file = input_dir / "note.txt"
+    input_file.write_text("sample text", encoding="utf-8")
+
+    run_dir = tmp_path / "rename_file_proposal" / "run-1"
+    run_dir.mkdir(parents=True)
+    (run_dir / "validated_response.json").write_text(
+        json.dumps(
+            {
+                "kind": "notes",
+                "actor": "assistant principal",
+                "slug": "safety-check",
+                "confidence": 0.84,
+                "notes": "pre",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest_path = tmp_path / "manifest.jsonl"
+    manifest_row = {
+        "task_name": "rename_file_proposal",
+        "source_path": str(input_file),
+        "run_id": "run-1",
+        "artifact_dir": str(run_dir),
+        "status": "success",
+    }
+    manifest_path.write_text(json.dumps(manifest_row) + "\n", encoding="utf-8")
+
+    def fail_if_used(*args, **kwargs):  # pragma: no cover - defensive guard
+        raise AssertionError("Provider execution path should not be used when rerun=False")
+
+    monkeypatch.setattr(evaluate_corpus, "SingleInputRunner", fail_if_used)
+    monkeypatch.setattr(evaluate_corpus, "DirectoryBatchRunner", fail_if_used)
+    monkeypatch.setattr(evaluate_corpus, "OpenAICompatibleProvider", fail_if_used)
+
+    rows = evaluate_corpus.run_corpus(
+        input_dir=input_dir,
+        endpoint="http://localhost:8000/v1/responses",
+        out_root=tmp_path,
+        export_path=tmp_path / "corpus_eval.csv",
+        output_format="csv",
+        rerun=False,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["status"] == "success"
+    assert rows[0]["actor"] == "assistant principal"

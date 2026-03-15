@@ -137,6 +137,13 @@ or directly:
 python3 scripts/evaluate_corpus.py tests/fixtures/rename_inputs --format csv --export tmp/corpus_eval.csv
 ```
 
+By default, `scripts/evaluate_corpus.py` reads existing proposal artifacts from `--out` and does **not** re-run the provider.
+Add `--rerun` only when you explicitly want to regenerate outputs from the model:
+
+```bash
+python3 scripts/evaluate_corpus.py tests/fixtures/rename_inputs --out .respkit_runs/live --rerun --format csv --export tmp/corpus_eval.csv
+```
+
 ## Review interpretation
 
 Review output is intentionally narrow:

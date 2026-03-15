@@ -17,10 +17,16 @@ class OpenAICompatibleProvider(LLMProvider):
     def __init__(self, endpoint: str, api_key: str | None = None) -> None:
         normalized = endpoint.rstrip("/")
         if normalized.endswith("/responses"):
-            self._endpoint = normalized
+            normalized = normalized[: -len("/responses")]
+        if normalized.endswith("/v1"):
+            self._api_base = normalized
         else:
-            self._endpoint = f"{normalized}/responses"
+            self._api_base = f"{normalized}/v1"
+        self._responses_url = f"{self._api_base}/responses"
+        self._models_url = f"{self._api_base}/models"
         self._api_key = api_key
+        self._discovered_models: list[str] | None = None
+        self._preflight_complete = False
 
     def complete(
         self,
@@ -34,6 +40,34 @@ class OpenAICompatibleProvider(LLMProvider):
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
+
+        discovered_models: list[str] | None = None
+        if cfg.enable_model_preflight:
+            try:
+                discovered_models = self._discover_models(headers=headers, timeout=cfg.timeout_s)
+            except Exception as exc:
+                return ProviderResponse(
+                    request_payload={"model": model},
+                    raw_response={},
+                    parsed_payload=None,
+                    usage=None,
+                    status_code=None,
+                    error_code="preflight_request_failed",
+                    error_message=self._annotate_error_message(str(exc), model=model, discovered_models=discovered_models),
+                    discovered_models=discovered_models,
+                )
+
+            if model not in discovered_models:
+                return ProviderResponse(
+                    request_payload={"model": model},
+                    raw_response={"discovered_models": discovered_models},
+                    parsed_payload=None,
+                    usage=None,
+                    status_code=404,
+                    error_code="preflight_model_not_found",
+                    error_message=f"requested_model={model}; discovered_models={discovered_models}",
+                    discovered_models=discovered_models,
+                )
 
         payload: dict[str, Any] = {
             "model": model,
@@ -58,7 +92,7 @@ class OpenAICompatibleProvider(LLMProvider):
         try:
             with httpx.Client(timeout=cfg.timeout_s) as client:
                 response = client.post(
-                    self._endpoint,
+                    self._responses_url,
                     json=payload,
                     headers=headers,
                 )
@@ -71,7 +105,8 @@ class OpenAICompatibleProvider(LLMProvider):
                 usage=None,
                 status_code=getattr(getattr(exc, "response", None), "status_code", None),
                 error_code="request_failed",
-                error_message=str(exc),
+                error_message=self._annotate_error_message(str(exc), model=model, discovered_models=discovered_models),
+                discovered_models=discovered_models,
             )
 
         try:
@@ -84,7 +119,12 @@ class OpenAICompatibleProvider(LLMProvider):
                 usage=None,
                 status_code=response.status_code,
                 error_code="invalid_json",
-                error_message=f"Could not decode JSON from provider: {exc}",
+                error_message=self._annotate_error_message(
+                    f"Could not decode JSON from provider: {exc}",
+                    model=model,
+                    discovered_models=discovered_models,
+                ),
+                discovered_models=discovered_models,
             )
 
         parsed_payload, parse_error = self._parse_payload(data)
@@ -96,7 +136,12 @@ class OpenAICompatibleProvider(LLMProvider):
                 usage=data.get("usage"),
                 status_code=response.status_code,
                 error_code="invalid_payload",
-                error_message=parse_error,
+                error_message=self._annotate_error_message(
+                    parse_error,
+                    model=model,
+                    discovered_models=discovered_models,
+                ),
+                discovered_models=discovered_models,
             )
 
         return ProviderResponse(
@@ -105,7 +150,47 @@ class OpenAICompatibleProvider(LLMProvider):
             parsed_payload=parsed_payload,
             usage=data.get("usage"),
             status_code=response.status_code,
+            discovered_models=discovered_models,
         )
+
+    def _discover_models(self, *, headers: Mapping[str, str], timeout: float) -> list[str]:
+        if not self._preflight_complete:
+            self._discovered_models = self._fetch_models(headers=headers, timeout=timeout)
+            self._preflight_complete = True
+        return list(self._discovered_models or [])
+
+    def _fetch_models(self, *, headers: Mapping[str, str], timeout: float) -> list[str]:
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                response = client.get(self._models_url, headers=headers)
+                response.raise_for_status()
+                payload = response.json()
+        except Exception as exc:
+            raise RuntimeError(f"model preflight failed for {self._models_url}: {exc}") from exc
+
+        if not isinstance(payload := self._extract_model_payload(payload), list):
+            raise RuntimeError("model preflight response had unexpected format")
+
+        return payload
+
+    @staticmethod
+    def _annotate_error_message(message: str, *, model: str, discovered_models: list[str] | None) -> str:
+        if discovered_models is None:
+            return f"{message} (requested_model={model})"
+        return f"{message} (requested_model={model}; discovered_models={discovered_models})"
+
+    @staticmethod
+    def _extract_model_payload(payload: Mapping[str, Any]) -> list[str]:
+        data = payload.get("data")
+        if not isinstance(data, list):
+            return []
+        ids: list[str] = []
+        for model in data:
+            if isinstance(model, Mapping):
+                model_id = model.get("id")
+                if isinstance(model_id, str):
+                    ids.append(model_id)
+        return ids
 
     @staticmethod
     def _parse_payload(raw: Mapping[str, Any]) -> tuple[Mapping[str, Any] | None, str | None]:

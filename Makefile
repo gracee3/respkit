@@ -38,6 +38,7 @@ GPU_MEM_UTIL ?= 0.92
 MAX_MODEL_LEN ?= 16384
 TP_SIZE ?= 1
 EXTRA_ARGS ?= --max-num-seqs 4 --max-num-batched-tokens 8192
+SERVED_MODEL_NAME ?= gpt-oss-20b
 
 # ── Open WebUI settings ─────────────────────────────────
 OPEN_WEBUI_HOST_ADDR := $(LLM_CONTAINER)
@@ -79,6 +80,7 @@ run-llm: stop-llm build setup
 		--pull $(DOCKER_PULL_POLICY) \
 		$(IMAGE) \
 		/model \
+		--served-model-name $(SERVED_MODEL_NAME) \
 		--host 0.0.0.0 \
 		--port 8000 \
 		--gpu-memory-utilization $(GPU_MEM_UTIL) \
@@ -165,6 +167,7 @@ run-openwebui: stop-openwebui setup
 		-e OPENAI_API_KEY=$(OPEN_WEBUI_VLLM_API_KEY) \
 		-e OPENAI_API_KEYS=$(OPEN_WEBUI_VLLM_API_KEY) \
 		$(OPEN_WEBUI_IMAGE)
+	docker logs -f $(OPEN_WEBUI_CONTAINER)
 
 run-openwebui-with-llm:
 	$(MAKE) run-gpt-balanced >/tmp/run-llm.log 2>&1 & \

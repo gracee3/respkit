@@ -165,8 +165,12 @@ class SingleInputRunner:
                 timeout_s=self.task.provider_config.timeout_s,
                 max_retries=self.task.provider_config.max_retries,
                 additional_options=self.task.normalized_provider_options(),
+                enable_model_preflight=self.task.provider_config.enable_model_preflight,
             ),
         )
+
+        if provider_response.discovered_models is not None:
+            artifact_writer.write_discovered_models(provider_response.discovered_models)
 
         if self.task.artifact_policy.include_provider_request_snapshot:
             artifact_writer.write_provider_request_snapshot(dict(provider_response.request_payload))
@@ -179,13 +183,15 @@ class SingleInputRunner:
 
         validation_report, validated_output = self._validate(provider_response)
         status = (
-            "provider_error"
-            if provider_response.error_message is not None
-            else ("success" if validation_report.valid else "validation_failed")
+            "preflight_model_not_found"
+            if provider_response.error_code == "preflight_model_not_found"
+            else ("provider_error" if provider_response.error_message is not None else ("success" if validation_report.valid else "validation_failed"))
         )
 
         run_metadata["status"] = status
         run_metadata["finished_at"] = datetime.now(timezone.utc).isoformat()
+        if provider_response.discovered_models is not None:
+            run_metadata["discovered_models"] = provider_response.discovered_models
 
         if self.task.artifact_policy.include_validation_report:
             artifact_writer.write_validation_report(validation_report.to_dict())

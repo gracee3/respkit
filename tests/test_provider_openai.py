@@ -35,12 +35,21 @@ class _FakeResponse:
 
 @dataclass
 class _FakeClient:
-    response: _FakeResponse
+    responses: dict[str, list[_FakeResponse]]
     captured: dict[str, Any]
 
     def __init__(self, response: _FakeResponse, captured: dict[str, Any]):
-        self.response = response
+        self.responses = {"get": [response], "post": []}
         self.captured = captured
+        self.calls: list[tuple[str, str, Any]] = []
+
+    def _pop(self, method: str) -> _FakeResponse:
+        if method not in self.responses or not self.responses[method]:
+            raise RuntimeError(f"No mocked response for {method}")
+        return self.responses[method].pop(0)
+
+    def register(self, method: str, response: _FakeResponse) -> None:
+        self.responses.setdefault(method, []).append(response)
 
     def __enter__(self):
         return self
@@ -49,10 +58,21 @@ class _FakeClient:
         return None
 
     def post(self, url: str, *, json: dict[str, Any], headers: dict[str, str]):
+        call = self._pop("post")
+        self.calls.append(("POST", url, dict(json)))
+        self.captured.setdefault("calls", []).append({"method": "POST", "url": url, "body": dict(json), "headers": dict(headers)})
         self.captured["url"] = url
         self.captured["json"] = dict(json)
         self.captured["headers"] = dict(headers)
-        return self.response
+        return call
+
+    def get(self, url: str, *, headers: dict[str, str]):
+        call = self._pop("get")
+        self.calls.append(("GET", url, {}))
+        self.captured.setdefault("calls", []).append({"method": "GET", "url": url, "headers": dict(headers)})
+        self.captured["url"] = url
+        self.captured["headers"] = dict(headers)
+        return call
 
 
 class Payload(BaseModel):
@@ -63,16 +83,24 @@ def test_openai_provider_success_captures_request_and_payload(monkeypatch):
     captured: dict[str, Any] = {}
 
     def fake_client_factory(*args: Any, **kwargs: Any) -> _FakeClient:
-        return _FakeClient(
+        client = _FakeClient(
             response=_FakeResponse(
+                status_code=200,
+                payload={"data": [{"id": "gpt-oss-20b"}]},
+            ),
+            captured=captured,
+        )
+        client.register(
+            "post",
+            _FakeResponse(
                 status_code=200,
                 payload={
                     "output": [{"type": "message", "content": [{"type": "output_text", "text": '{"foo": 123}'}]}],
                     "usage": {"input_tokens": 2},
                 },
             ),
-            captured=captured,
         )
+        return client
 
     monkeypatch.setattr("httpx.Client", fake_client_factory)
 
@@ -83,7 +111,11 @@ def test_openai_provider_success_captures_request_and_payload(monkeypatch):
         response_model=Payload,
     )
 
-    assert captured["url"] == "http://localhost:8000/responses"
+    assert len(captured["calls"]) == 2
+    assert captured["calls"][0]["method"] == "GET"
+    assert captured["calls"][0]["url"] == "http://localhost:8000/v1/models"
+    assert captured["calls"][1]["method"] == "POST"
+    assert captured["calls"][1]["url"] == "http://localhost:8000/v1/responses"
     assert captured["json"]["model"] == "gpt-oss-20b"
     assert captured["json"]["input"] == [{"role": "user", "content": "hello"}]
     assert captured["json"]["response_format"]["type"] == "json_schema"
@@ -100,13 +132,77 @@ def test_openai_provider_accepts_full_responses_endpoint(monkeypatch):
     captured: dict[str, Any] = {}
 
     def fake_client_factory(*args: Any, **kwargs: Any) -> _FakeClient:
-        return _FakeClient(
+        client = _FakeClient(
             response=_FakeResponse(
+                status_code=200,
+                payload={"data": [{"id": "gpt-oss-20b"}]},
+            ),
+            captured=captured,
+        )
+        client.register(
+            "post",
+            _FakeResponse(
                 status_code=200,
                 payload={
                     "output": [{"type": "message", "content": [{"type": "output_text", "text": '{"foo": 456}'}]}],
                 },
             ),
+        )
+        return client
+
+    monkeypatch.setattr("httpx.Client", fake_client_factory)
+
+    provider = OpenAICompatibleProvider(endpoint="http://localhost:8000/v1/responses")
+    result = provider.complete(
+        messages=[Message(role="user", content="hello")],
+        model="gpt-oss-20b",
+        response_model=Payload,
+    )
+
+    assert captured["calls"][0]["url"] == "http://localhost:8000/v1/models"
+    assert captured["calls"][1]["url"] == "http://localhost:8000/v1/responses"
+    assert result.parsed_payload == {"foo": 456}
+    assert result.error_code is None
+
+
+def test_openai_provider_preflight_success_when_model_exists(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_client_factory(*args: Any, **kwargs: Any) -> _FakeClient:
+        client = _FakeClient(
+            response=_FakeResponse(status_code=200, payload={"data": [{"id": "gpt-oss-20b"}, {"id": "other-model"}]}),
+            captured=captured,
+        )
+        client.register(
+            "post",
+            _FakeResponse(
+                status_code=200,
+                payload={"output": [{"type": "message", "content": [{"type": "output_text", "text": '{"foo": 123}'}]}]},
+            ),
+        )
+        return client
+
+    monkeypatch.setattr("httpx.Client", fake_client_factory)
+
+    provider = OpenAICompatibleProvider(endpoint="http://localhost:8000/v1")
+    result = provider.complete(
+        messages=[Message(role="user", content="hello")],
+        model="gpt-oss-20b",
+        response_model=Payload,
+    )
+
+    assert result.error_code is None
+    assert result.discovered_models == ["gpt-oss-20b", "other-model"]
+    assert captured["calls"][0]["url"] == "http://localhost:8000/v1/models"
+    assert captured["calls"][1]["url"] == "http://localhost:8000/v1/responses"
+
+
+def test_openai_provider_preflight_model_missing(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_client_factory(*args: Any, **kwargs: Any) -> _FakeClient:
+        return _FakeClient(
+            response=_FakeResponse(status_code=200, payload={"data": [{"id": "other-model"}]}),
             captured=captured,
         )
 
@@ -119,19 +215,29 @@ def test_openai_provider_accepts_full_responses_endpoint(monkeypatch):
         response_model=Payload,
     )
 
-    assert captured["url"] == "http://localhost:8000/v1/responses"
-    assert result.parsed_payload == {"foo": 456}
-    assert result.error_code is None
+    assert result.error_code == "preflight_model_not_found"
+    assert result.status_code == 404
+    assert "requested_model=gpt-oss-20b" in result.error_message
+    assert "discovered_models=['other-model']" in result.error_message
+    assert result.discovered_models == ["other-model"]
+    assert len(captured["calls"]) == 1
+    assert captured["calls"][0]["method"] == "GET"
+    assert captured["calls"][0]["url"] == "http://localhost:8000/v1/models"
 
 
 def test_openai_provider_request_error_is_normalized(monkeypatch):
     captured: dict[str, Any] = {}
 
     def fake_client_factory(*args: Any, **kwargs: Any) -> _FakeClient:
-        return _FakeClient(
-            response=_FakeResponse(status_code=500, raise_error=Exception("provider unreachable"), payload={}),
+        client = _FakeClient(
+            response=_FakeResponse(status_code=200, payload={"data": [{"id": "gpt-oss-20b"}]}),
             captured=captured,
         )
+        client.register(
+            "post",
+            _FakeResponse(status_code=500, raise_error=Exception("provider unreachable"), payload={}),
+        )
+        return client
 
     monkeypatch.setattr("httpx.Client", fake_client_factory)
 
@@ -141,6 +247,9 @@ def test_openai_provider_request_error_is_normalized(monkeypatch):
         model="gpt-oss-20b",
     )
 
+    assert len(captured["calls"]) == 2
+    assert captured["calls"][0]["method"] == "GET"
+    assert captured["calls"][1]["method"] == "POST"
     assert captured["json"]["model"] == "gpt-oss-20b"
     assert result.error_code == "request_failed"
     assert "provider unreachable" in result.error_message
@@ -153,13 +262,18 @@ def test_openai_provider_invalid_json_payload_is_reported(monkeypatch):
     captured: dict[str, Any] = {}
 
     def fake_client_factory(*args: Any, **kwargs: Any) -> _FakeClient:
-        return _FakeClient(
-            response=_FakeResponse(
+        client = _FakeClient(
+            response=_FakeResponse(status_code=200, payload={"data": [{"id": "gpt-oss-20b"}]}),
+            captured=captured,
+        )
+        client.register(
+            "post",
+            _FakeResponse(
                 status_code=200,
                 payload={"output": [{"type": "message", "content": [{"type": "output_text", "text": "not json"}]}]},
             ),
-            captured=captured,
         )
+        return client
 
     monkeypatch.setattr("httpx.Client", fake_client_factory)
 

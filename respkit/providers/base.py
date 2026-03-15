@@ -14,6 +14,7 @@ class ProviderConfig:
     timeout_s: float = 30.0
     max_retries: int = 1
     temperature: float = 0.0
+    enable_model_preflight: bool = True
     additional_options: Mapping[str, Any] | None = None
 
 
@@ -36,6 +37,7 @@ class ProviderResponse:
     status_code: int | None = None
     error_code: str | None = None
     error_message: str | None = None
+    discovered_models: list[str] | None = None
 
 
 @dataclass

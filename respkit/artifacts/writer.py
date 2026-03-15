@@ -31,6 +31,7 @@ class ArtifactWriter:
     PROMPT_TEMPLATE_FILE = "prompt_template.md"
     PROMPT_RENDERED_FILE = "prompt.txt"
     PROVIDER_REQUEST_FILE = "provider_request.json"
+    DISCOVERED_MODELS_FILE = "discovered_models.json"
     RAW_RESPONSE_FILE = "raw_response.json"
     PARSED_RESPONSE_FILE = "parsed_response.json"
     VALIDATED_RESPONSE_FILE = "validated_response.json"
@@ -64,6 +65,9 @@ class ArtifactWriter:
 
     def write_provider_request_snapshot(self, request_payload: Mapping[str, Any]) -> None:
         self.write_json(self.PROVIDER_REQUEST_FILE, request_payload)
+
+    def write_discovered_models(self, discovered_models: list[str] | None) -> None:
+        self.write_json(self.DISCOVERED_MODELS_FILE, discovered_models or [])
 
     def write_parsed_response(self, payload: Mapping[str, Any] | None) -> None:
         self.write_json(self.PARSED_RESPONSE_FILE, payload or {})

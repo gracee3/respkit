@@ -105,12 +105,21 @@ Each run writes the following files under `artifacts/<task_name>/<run_id>/`:
 - `prompt.txt` — rendered prompt
 - `provider_request.json` — request payload sent to the provider
 - `raw_response.json` — raw provider response
+- `discovered_models.json` — discovered model ids from `/v1/models` preflight
 - `parsed_response.json` — parsed JSON payload when available
 - `validation_report.json` — normalized validation outcome
 - `validated_response.json` — validated output after schema/validator pass
 - `action_results.json` — action execution summaries
 - `run_metadata.json` — run metadata and status
 - `manifest_row.json` — optional row writer output (if manifest action is used)
+
+## If you get model-not-found
+
+- Verify the model IDs exposed by your endpoint:
+  - `curl http://localhost:8000/v1/models`
+- Use exactly one of the returned model IDs in your task configuration (example task uses `gpt-oss-20b`).
+- If the endpoint exposes a different serve name, start vLLM with:
+  - `--served-model-name gpt-oss-20b`
 
 ## Example structure summary
 

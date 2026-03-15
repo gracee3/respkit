@@ -59,6 +59,7 @@ class _ScriptedLLMProvider(LLMProvider):
             status_code=response.get("status_code"),
             error_code=response.get("error_code"),
             error_message=response.get("error_message"),
+            discovered_models=response.get("discovered_models"),
         )
 
 
@@ -301,6 +302,45 @@ def test_batch_run_with_mixed_success_and_failure_inputs(tmp_path):
     assert len(manifest_lines) == 3
     statuses = [json.loads(row)["status"] for row in manifest_lines]
     assert statuses == ["success", "validation_failed", "provider_error"]
+
+
+def test_preflight_model_not_found_artifacts_and_manifest_status(tmp_path):
+    task = _proposal_task(tmp_path)
+    provider = _ScriptedLLMProvider(
+        responses=[
+            {
+                "raw_response": {"discovered_models": ["other-model"]},
+                "error_code": "preflight_model_not_found",
+                "error_message": "requested_model=gpt-oss-20b; discovered_models=['other-model']",
+                "status_code": 404,
+                "discovered_models": ["other-model"],
+            }
+        ]
+    )
+    manifest = ManifestWriter(tmp_path / "manifest.jsonl")
+    runner = SingleInputRunner(
+        task=task,
+        provider=provider,
+        artifacts_root=tmp_path / "artifacts",
+        manifest_writer=manifest,
+    )
+    input_file = tmp_path / "txt.txt"
+    input_file.write_text("Some decently long text for preflight behavior.", encoding="utf-8")
+
+    result = runner.run(
+        NormalizedInput(
+            source_id="preflight",
+            source_path=input_file,
+            media_type="text/plain",
+            decoded_text="Some decently long text for preflight behavior.",
+        )
+    )
+
+    assert result.status == "preflight_model_not_found"
+    artifact_dir = Path(result.artifacts_dir)
+    assert (artifact_dir / ArtifactWriter.DISCOVERED_MODELS_FILE).exists()
+    manifest_rows = [json.loads(line) for line in (tmp_path / "manifest.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert manifest_rows[-1]["status"] == "preflight_model_not_found"
 
 
 def _write_task_markdown(context):

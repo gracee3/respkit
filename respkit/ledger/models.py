@@ -60,6 +60,9 @@ class LedgerRow:
     apply_code_commit: str | None = None
     applied_in_commit: str | None = None
     human_notes: str | None = None
+    human_decision_source: str | None = None
+    human_decision_actor: str | None = None
+    human_decision_metadata: dict[str, Any] = field(default_factory=dict)
     proposal_recorded_at: datetime | None = None
     review_recorded_at: datetime | None = None
     human_decision_recorded_at: datetime | None = None
@@ -101,6 +104,9 @@ class LedgerRow:
                 "item_id": self.item_id,
                 "machine_status": self.machine_status,
                 "human_status": self.human_status,
+                "human_decision_source": self.human_decision_source,
+                "human_decision_actor": self.human_decision_actor,
+                "human_decision_metadata": self.human_decision_metadata,
                 "version": self.version,
                 "rerun_eligible": self.rerun_eligible,
                 "proposal_payload": self.proposal_payload,
@@ -173,6 +179,9 @@ class LedgerRow:
             apply_code_commit=payload.get("apply_code_commit"),
             applied_in_commit=payload.get("applied_in_commit"),
             human_notes=payload.get("human_notes"),
+            human_decision_source=payload.get("human_decision_source"),
+            human_decision_actor=payload.get("human_decision_actor"),
+            human_decision_metadata=dict(payload.get("human_decision_metadata", {})),
             proposal_recorded_at=cls._parse_datetime(payload.get("proposal_recorded_at")),
             review_recorded_at=cls._parse_datetime(payload.get("review_recorded_at")),
             human_decision_recorded_at=cls._parse_datetime(payload.get("human_decision_recorded_at")),

@@ -287,14 +287,20 @@ ledger.run_apply(
 )
 ```
 
-### Resolver example (interactive + hook extension)
+### Programmatic resolver session
 
-The SDK also provides a generic interactive resolver with task-specific hooks:
+Use a session object directly from agents or scripts:
 
 ```python
 from pathlib import Path
 
-from respkit.ledger import DefaultResolverHooks, LedgerQuery, LedgerResolver, LedgerStore
+from respkit.ledger import (
+    DefaultResolverHooks,
+    ResolverAction,
+    ResolverSession,
+    LedgerQuery,
+    LedgerStore,
+)
 
 
 class MyHooks(DefaultResolverHooks):
@@ -303,13 +309,71 @@ class MyHooks(DefaultResolverHooks):
             return ["high risk"]
         return []
 
+    def derive_approved_output(self, row, edits):
+        return {"approved_output": edits or {"approved": True}}
+
+
+    def validate_resolution(self, row, edits):
+        return (True, None)
 
 ledger = LedgerStore(Path(".my_ledger.sqlite"))
-resolver = LedgerResolver(ledger=ledger, hooks=MyHooks(), input_fn=lambda prompt: "a")
-resolver.resolve(
-    query=LedgerQuery(task_name="generic-corpus-task", unresolved_only=True, include_approved=False),
-    dry_run=True,
-)
+session = ResolverSession(store=ledger, hooks=MyHooks())
+
+# 1) list pending rows
+pending = session.list_pending(LedgerQuery(task_name="generic-corpus-task", unresolved_only=True))
+for view in pending:
+    print(view.item_id, view.machine_status, view.human_status, view.risk_flags)
+    print("preview:", session.preview_row(view))
+
+    # Recommendation mode (do not persist)
+    recommendation = session.build_recommendation(
+        view,
+        action=ResolverAction.APPROVE_WITH_EDIT,
+        edits={"approved": True},
+        note="policy suggestion",
+        decision_source="agent",
+        decision_actor="policy-bot",
+    )
+    recommendation_result = session.apply_recommendation(recommendation, apply=False)
+    print("recommendation:", recommendation_result.status)
+
+    # Persist as an explicit decision.
+    persisted = session.apply_recommendation(
+        session.build_recommendation(
+            view,
+            action=ResolverAction.REJECT,
+            note="blocked by policy",
+            decision_source="agent",
+            decision_actor="policy-bot",
+        )
+    )
+    print("persisted:", persisted.status, persisted.action.value if persisted.action else None)
+
+```
+
+### Interactive resolver example (hook extension)
+
+The CLI flow remains available and is now a thin wrapper over `ResolverSession`.
+
+```bash
+respkit-ledger resolve --ledger .my_ledger.sqlite --task-name generic-corpus-task --unresolved-only
+```
+
+You can set decision provenance metadata for CLI-driven rows:
+
+```bash
+respkit-ledger resolve \
+  --ledger .my_ledger.sqlite \
+  --task-name generic-corpus-task \
+  --unresolved-only \
+  --decision-source cli \
+  --decision-actor cli-user
+```
+
+For a runnable toy demo, run:
+
+```bash
+PYTHONPATH=. python3 examples/demo_ledger_session.py
 ```
 
 ### Resolver and Export CLI
@@ -329,6 +393,7 @@ Run the generic ledger demos:
 ```bash
 PYTHONPATH=. python3 examples/demo_ledger.py
 PYTHONPATH=. python3 examples/demo_ledger_resolver.py
+PYTHONPATH=. python3 examples/demo_ledger_session.py
 ```
 
 Target explicit paths:
@@ -345,3 +410,8 @@ PYTHONPATH=. python3 examples/demo_ledger.py --repo /tmp/corpus_repo --ledger /t
 
 This repository intentionally does not bundle real corpus data or private task iterations.
 Those should live in a private task/corpus repo.
+- `ResolverSession(store, hooks)` for programmatic row-by-row decision workflows
+  - `list_pending(...)`, `get_row(...)`, `get_next(...)`, `peek_next(...)`
+  - `preview_row(...)`, `build_recommendation(...)`, `apply_recommendation(...)`
+- `ResolverAction` (`approve`, `approve_with_edit`, `reject`, `needs_review`, `skip`)
+- `ResolverRecommendation`, `ResolverRowView`, `ResolverApplyResult`, `ValidationResult`

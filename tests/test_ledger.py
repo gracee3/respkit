@@ -7,17 +7,23 @@ import json
 import subprocess
 from pathlib import Path
 from typing import Any
+import pytest
 
 from respkit.ledger import (
     DefaultResolverHooks,
+    LedgerResolver,
+    ResolverAction,
+    ResolverRowView,
+    ResolverSession,
+    ValidationResult,
     HumanDecision,
     ApplyPolicy,
     LedgerQuery,
-    LedgerResolver,
     LedgerRow,
     LedgerStore,
     MachineStatus,
 )
+from respkit.ledger import cli as ledger_cli
 from respkit.ledger.git import get_head_commit
 
 
@@ -470,3 +476,148 @@ def test_resolver_dry_run_does_not_persist(tmp_path: Path) -> None:
     row = store.get_row(task_name, "i1")
     assert row is not None
     assert row.human_status == HumanDecision.NEEDS_REVIEW
+
+
+class _ProgrammaticHooks(DefaultResolverHooks):
+    def render_summary(self, row: LedgerRow) -> str:
+        return f"{row.item_id}:{row.machine_status.value}:{row.human_status.value}"
+
+    def preview_item(self, row: LedgerRow) -> dict[str, Any]:
+        return {"preview": row.item_id}
+
+    def validate_resolution(self, row: LedgerRow, edits: Any | None) -> ValidationResult:
+        if row.item_id == "bad":
+            if not isinstance(edits, dict) or edits.get("ok") is not True:
+                return ValidationResult(valid=False, errors=["missing_ok"])
+        if edits is None:
+            return ValidationResult(valid=True)
+        if isinstance(edits, dict):
+            return ValidationResult(valid=True)
+        return ValidationResult(valid=False, errors=["edits must be an object"])
+
+    def derive_approved_output(self, row: LedgerRow, edits: Any | None) -> dict[str, Any]:
+        if edits is None:
+            return {"approved": True, "item_id": row.item_id}
+        return {"approved": True, "edits": edits}
+
+
+def test_resolver_session_pending_listing_and_get_row(tmp_path: Path) -> None:
+    store = LedgerStore(tmp_path / "ledger.sqlite")
+    task_name = "programmatic-task"
+
+    store.record_proposal(task_name=task_name, item_id="pending", proposal_payload={"a": 1}, proposal_result={"ok": True})
+    store.record_human_decision(task_name=task_name, item_id="pending", decision=HumanDecision.NEEDS_REVIEW)
+
+    store.record_proposal(task_name=task_name, item_id="approved", proposal_payload={"a": 2}, proposal_result={"ok": True})
+    store.record_human_decision(task_name=task_name, item_id="approved", decision=HumanDecision.APPROVED)
+    store.record_apply(task_name=task_name, item_id="approved", apply_payload={"applied": True}, apply_result={"status": "ok"})
+
+    session = ResolverSession(store=store, hooks=_ProgrammaticHooks())
+    pending = session.list_pending(LedgerQuery(task_name=task_name, unresolved_only=True))
+    assert [row.item_id for row in pending] == ["pending"]
+
+    pending_row = session.get_row(task_name, "pending")
+    assert pending_row is not None
+    assert isinstance(pending_row, ResolverRowView)
+
+
+def test_resolver_session_preview_and_row_structure(tmp_path: Path) -> None:
+    store = LedgerStore(tmp_path / "ledger.sqlite")
+    task_name = "programmatic-task"
+    store.record_proposal(task_name=task_name, item_id="item-x", proposal_payload={"op": "x"}, proposal_result={"ok": True})
+    session = ResolverSession(store=store, hooks=_ProgrammaticHooks())
+
+    view = session.get_next(LedgerQuery(task_name=task_name, unresolved_only=True))
+    assert view is not None
+    assert view.item_id == "item-x"
+    assert view.machine_status == "proposed"
+    assert view.human_status == "needs_review"
+    assert view.decision_source is None
+    assert view.rendered_summary.startswith("item-x")
+    assert session.preview_row(view) == {"preview": "item-x"}
+
+
+def test_resolver_session_recommendation_only_does_not_persist(tmp_path: Path) -> None:
+    store = LedgerStore(tmp_path / "ledger.sqlite")
+    task_name = "programmatic-task"
+    store.record_proposal(task_name=task_name, item_id="item-1", proposal_payload={"op": "x"}, proposal_result={"ok": True})
+
+    session = ResolverSession(store=store, hooks=_ProgrammaticHooks())
+    view = session.get_row(task_name, "item-1")
+    assert view is not None
+    rec = session.build_recommendation(
+        view,
+        ResolverAction.APPROVE_WITH_EDIT,
+        edits={"approved_output": True},
+        note="policy pass",
+        decision_source="agent",
+        decision_actor="agent-0",
+        decision_code_commit="abc123",
+    )
+    result = session.apply_recommendation(rec, apply=False)
+    assert result.status == "recommendation_only"
+
+    row = store.get_row(task_name, "item-1")
+    assert row is not None
+    assert row.human_status == HumanDecision.NEEDS_REVIEW
+
+
+def test_resolver_session_apply_mode_persists_with_provenance(tmp_path: Path) -> None:
+    store = LedgerStore(tmp_path / "ledger.sqlite")
+    task_name = "programmatic-task"
+    store.record_proposal(task_name=task_name, item_id="item-2", proposal_payload={"op": "x"}, proposal_result={"ok": True})
+
+    session = ResolverSession(store=store, hooks=_ProgrammaticHooks())
+    row = session.get_row(task_name, "item-2")
+    assert row is not None
+    rec = session.build_recommendation(
+        row,
+        ResolverAction.APPROVE,
+        note="approved by policy",
+        decision_source="policy",
+        decision_actor="policy-bot",
+        decision_code_commit="def456",
+    )
+    saved = session.apply_recommendation(rec)
+    assert saved.status == "applied"
+    persisted = store.get_row(task_name, "item-2")
+    assert persisted is not None
+    assert persisted.human_status == HumanDecision.APPROVED
+    assert persisted.human_decision_source == "policy"
+    assert persisted.human_decision_actor == "policy-bot"
+    assert persisted.human_decision_code_commit == "def456"
+
+
+def test_resolver_validation_failures_block_apply(tmp_path: Path) -> None:
+    store = LedgerStore(tmp_path / "ledger.sqlite")
+    task_name = "programmatic-task"
+    store.record_proposal(task_name=task_name, item_id="bad", proposal_payload={"op": "x"}, proposal_result={"ok": True})
+
+    session = ResolverSession(store=store, hooks=_ProgrammaticHooks())
+    view = session.get_row(task_name, "bad")
+    assert view is not None
+    rec = session.build_recommendation(view, ResolverAction.APPROVE_WITH_EDIT, edits={"ok": "no"})
+    assert rec.validation.valid is False
+    applied = session.apply_recommendation(rec)
+    assert applied.status == "validation_failed"
+
+    row = store.get_row(task_name, "bad")
+    assert row is not None
+    assert row.human_status == HumanDecision.NEEDS_REVIEW
+
+
+def test_resolver_cli_resolve_runs_with_no_matches(tmp_path: Path, capsys) -> None:
+    ledger_path = tmp_path / "ledger.sqlite"
+    result = ledger_cli.main(
+        [
+            "resolve",
+            "--ledger",
+            str(ledger_path),
+            "--task-name",
+            "empty-task",
+            "--dry-run",
+        ]
+    )
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "No rows match current query." in output

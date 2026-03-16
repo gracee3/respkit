@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 
 from .query import LedgerQuery
-from .resolver import DefaultResolverHooks, LedgerResolver, load_hook_class
+from .resolver import DefaultResolverHooks, ResolverSession, load_hook_class
 from .store import LedgerStore
 
 
@@ -65,8 +65,15 @@ def _build_hook(hook_target: str | None):
 def _run_resolve(args: argparse.Namespace) -> int:
     store = LedgerStore(args.ledger)
     hooks = _build_hook(args.hooks)
-    resolver = LedgerResolver(store=store, hooks=hooks)
-    results = resolver.resolve(query=_build_query_from_args(args), dry_run=args.dry_run)
+    session = ResolverSession(store=store, hooks=hooks)
+    results = session.resolve_interactive(
+        query=_build_query_from_args(args),
+        input_fn=input,
+        output_fn=print,
+        dry_run=args.dry_run,
+        decision_source=args.decision_source,
+        decision_actor=args.decision_actor,
+    )
     saved = len([item for item in results if item.status == "saved"])
     print(f"saved={saved} processed={len(results)}")
     return 0
@@ -100,6 +107,8 @@ def build_parser() -> argparse.ArgumentParser:
     resolve.add_argument("--ledger", type=Path, required=True)
     _add_query_args(resolve)
     resolve.add_argument("--resume", action="store_true", help="resume pending rows by default")
+    resolve.add_argument("--decision-source", default="human", help="decision source for persisted recommendations")
+    resolve.add_argument("--decision-actor", default="cli-user", help="decision actor for persisted recommendations")
     resolve.add_argument("--hooks", help="task hook class path e.g. examples.ledger_hooks:ToyResolverHooks")
     resolve.add_argument("--dry-run", action="store_true", help="preview decisions without writing")
     resolve.set_defaults(func=_run_resolve)

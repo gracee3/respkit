@@ -181,6 +181,9 @@ class LedgerStore:
                     apply_code_commit TEXT,
                     applied_in_commit TEXT,
                     human_notes TEXT,
+                    human_decision_source TEXT,
+                    human_decision_actor TEXT,
+                    human_decision_metadata TEXT NOT NULL DEFAULT '{}',
                     proposal_recorded_at TEXT,
                     review_recorded_at TEXT,
                     human_decision_recorded_at TEXT,
@@ -194,6 +197,7 @@ class LedgerStore:
                 );
                 """
             )
+            self._migrate_row_schema()
             self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS ledger_events (
@@ -230,6 +234,21 @@ class LedgerStore:
                 """
             )
             self._conn.execute("COMMIT;")
+
+    def _existing_columns(self, table_name: str) -> set[str]:
+        cursor = self._conn.execute(f"PRAGMA table_info({table_name});")
+        return {row["name"] for row in cursor.fetchall()}
+
+    def _migrate_row_schema(self) -> None:
+        existing = self._existing_columns("ledger_rows")
+        migrations = {
+            "human_decision_source": "ALTER TABLE ledger_rows ADD COLUMN human_decision_source TEXT;",
+            "human_decision_actor": "ALTER TABLE ledger_rows ADD COLUMN human_decision_actor TEXT;",
+            "human_decision_metadata": "ALTER TABLE ledger_rows ADD COLUMN human_decision_metadata TEXT NOT NULL DEFAULT '{}';",
+        }
+        for column_name, statement in migrations.items():
+            if column_name not in existing:
+                self._conn.execute(statement)
 
     def _clone_row(self, row: LedgerRow) -> LedgerRow:
         return LedgerRow.from_dict(row.to_dict())
@@ -274,6 +293,9 @@ class LedgerStore:
             apply_code_commit=row["apply_code_commit"],
             applied_in_commit=row["applied_in_commit"],
             human_notes=row["human_notes"],
+            human_decision_source=row["human_decision_source"],
+            human_decision_actor=row["human_decision_actor"],
+            human_decision_metadata=_parse_payload(row["human_decision_metadata"]) or {},
             proposal_recorded_at=_parse_datetime(row["proposal_recorded_at"]),
             review_recorded_at=_parse_datetime(row["review_recorded_at"]),
             human_decision_recorded_at=_parse_datetime(row["human_decision_recorded_at"]),
@@ -312,6 +334,9 @@ class LedgerStore:
             row.apply_code_commit,
             row.applied_in_commit,
             row.human_notes,
+            row.human_decision_source,
+            row.human_decision_actor,
+            _serialize_payload(row.human_decision_metadata),
             _serialize_datetime(row.proposal_recorded_at),
             _serialize_datetime(row.review_recorded_at),
             _serialize_datetime(row.human_decision_recorded_at),
@@ -332,10 +357,11 @@ class LedgerStore:
                 apply_payload, proposal_result, review_result, apply_result, item_locator,
                 input_fingerprint, proposal_run_id, review_run_id, human_decision_run_id,
                 apply_run_id, proposal_code_commit, review_code_commit, human_decision_code_commit,
-                apply_code_commit, applied_in_commit, human_notes, proposal_recorded_at,
+                apply_code_commit, applied_in_commit, human_notes, human_decision_source,
+                human_decision_actor, human_decision_metadata, proposal_recorded_at,
                 review_recorded_at, human_decision_recorded_at, apply_recorded_at, created_at,
                 updated_at, machine_status_updated_at, human_status_updated_at, extras
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             self._serialize_state_values(row),
         )
@@ -367,6 +393,9 @@ class LedgerStore:
                 apply_code_commit = ?,
                 applied_in_commit = ?,
                 human_notes = ?,
+                human_decision_source = ?,
+                human_decision_actor = ?,
+                human_decision_metadata = ?,
                 proposal_recorded_at = ?,
                 review_recorded_at = ?,
                 human_decision_recorded_at = ?,
@@ -402,6 +431,9 @@ class LedgerStore:
                 row.apply_code_commit,
                 row.applied_in_commit,
                 row.human_notes,
+                row.human_decision_source,
+                row.human_decision_actor,
+                _serialize_payload(row.human_decision_metadata),
                 _serialize_datetime(row.proposal_recorded_at),
                 _serialize_datetime(row.review_recorded_at),
                 _serialize_datetime(row.human_decision_recorded_at),
@@ -543,6 +575,9 @@ class LedgerStore:
             "review_run_id",
             "human_decision_run_id",
             "apply_run_id",
+            "human_decision_source",
+            "human_decision_actor",
+            "human_decision_metadata",
             "proposal_code_commit",
             "review_code_commit",
             "human_decision_code_commit",
@@ -724,6 +759,9 @@ class LedgerStore:
         item_id: str,
         decision: HumanDecision,
         decision_payload: Any | None = None,
+        decision_source: str | None = None,
+        decision_actor: str | None = None,
+        decision_metadata: dict[str, Any] | None = None,
         decision_run_id: str | None = None,
         decision_code_commit: str | None = None,
         notes: str | None = None,
@@ -738,6 +776,9 @@ class LedgerStore:
             row.human_decision_code_commit = decision_code_commit
             row.human_status = decision
             row.human_notes = notes
+            row.human_decision_source = decision_source
+            row.human_decision_actor = decision_actor
+            row.human_decision_metadata = decision_metadata or {}
             row.human_decision_payload = decision_payload
             row.human_status_updated_at = now
             row.human_decision_recorded_at = now

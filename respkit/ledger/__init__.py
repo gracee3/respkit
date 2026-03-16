@@ -4,7 +4,20 @@ from .git import GitWorkingTreeState, LedgerGitError, get_head_commit, require_c
 from .models import HumanDecision, LedgerRow, MachineStatus
 from .query import LedgerQuery
 from .store import ApplyCallback, ApplyPolicy, ApplyResult, LedgerStore
-from .resolver import DefaultResolverHooks, LedgerResolver, ResolverDecision, ResolverHooks, ResolverResult, load_hook_class
+from .resolver import (
+    DefaultResolverHooks,
+    ResolverDecision,
+    LedgerResolver,
+    ResolverHooks,
+    ResolverAction,
+    ResolverApplyResult,
+    ResolverRecommendation,
+    ResolverRowView,
+    ResolverResult,
+    ResolverSession,
+    ValidationResult,
+    load_hook_class,
+)
 
 __all__ = [
     "ApplyCallback",
@@ -19,9 +32,15 @@ __all__ = [
     "HumanDecision",
     "DefaultResolverHooks",
     "LedgerResolver",
+    "ResolverAction",
+    "ResolverApplyResult",
+    "ResolverRecommendation",
+    "ResolverRowView",
+    "ResolverSession",
     "ResolverDecision",
     "ResolverResult",
     "ResolverHooks",
+    "ValidationResult",
     "load_hook_class",
     "get_head_commit",
     "require_clean_working_tree",

@@ -2,6 +2,54 @@
 
 `respkit` is a small reusable Python SDK for structured LLM tasks over normalized text input.
 
+## Install
+
+```bash
+python3 -m pip install respkit
+```
+
+For local development:
+
+```bash
+git clone https://github.com/gracee3/respkit.git
+cd respkit
+python3 -m pip install -e .[dev]
+```
+
+## Quick Start
+
+```python
+from pathlib import Path
+
+from respkit.inputs import NormalizedInput
+from respkit.providers import OpenAICompatibleProvider
+from respkit.runners import SingleInputRunner
+
+from examples.demo_rename_proposal.task import build_tasks
+
+
+proposal_task, _review_task = build_tasks()
+runner = SingleInputRunner(
+    task=proposal_task,
+    provider=OpenAICompatibleProvider(endpoint="http://localhost:8000/v1/responses"),
+    artifacts_root=Path(".respkit_demo"),
+)
+
+item = NormalizedInput(
+    source_id="sample.txt",
+    source_path=Path("sample.txt"),
+    media_type="text/plain",
+    decoded_text=Path("sample.txt").read_text(encoding="utf-8"),
+)
+
+result = runner.run(item)
+print(result.status, result.validated_output)
+```
+
+`result` contains normalized status, structured output, validation report,
+and artifact directory path. Use `ReviewRunner` when you need a second-pass
+validator.
+
 ## What the SDK contains
 
 - `respkit/` — reusable core:
@@ -48,12 +96,13 @@ This example uses only synthetic names/entities and works without corpus-specifi
 ## Run the example
 
 ```bash
-python -m examples.demo_rename_proposal single /path/to/file.txt \
+respkit-demo single /path/to/file.txt \
   --endpoint http://localhost:8000/v1/responses \
   --out .respkit_demo \
   --provider-timeout 30
+  # or: python -m examples.demo_rename_proposal single /path/to/file.txt ...
 
-python -m examples.demo_rename_proposal batch /path/to/text-dir \
+respkit-demo batch /path/to/text-dir \
   --endpoint http://localhost:8000/v1/responses \
   --out .respkit_demo \
   --max-concurrency 4 \
@@ -63,12 +112,13 @@ python -m examples.demo_rename_proposal batch /path/to/text-dir \
 You can run the review pass concurrently with:
 
 ```bash
-python -m examples.demo_rename_proposal batch /path/to/text-dir \
+respkit-demo batch /path/to/text-dir \
   --endpoint http://localhost:8000/v1/responses \
   --out .respkit_demo \
   --max-concurrency 8 \
   --review --review-max-concurrency 4 \
   --provider-timeout 30
+  # or: python -m examples.demo_rename_proposal batch ...
 ```
 
 Available flags:
@@ -142,4 +192,3 @@ The run metadata includes provider timing, status, and chosen model.
 
 This repository intentionally does not bundle real corpus data or private task iterations.
 Those should live in a private task/corpus repo.
-

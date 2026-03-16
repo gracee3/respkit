@@ -1,20 +1,51 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=69.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "respkit"
 version = "0.1.0"
-description = "Minimal reusable SDK for structured LLM task execution over normalized inputs."
-requires-python = ">=3.11"
+description = "Minimal reusable SDK for structured LLM task execution over normalized text input."
 readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["llm", "sdk", "structured-output", "batch-processing", "provider-agnostic", "manifest"]
+classifiers = [
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
   "pydantic>=2.8,<3",
-  "httpx>=0.27"
+  "httpx>=0.27",
 ]
+urls = { Homepage = "https://github.com/gracee3/respkit" }
 
 [project.optional-dependencies]
-dev = ["pytest>=8.2"]
+dev = [
+  "build",
+  "pytest>=8.2",
+]
+
+[project.scripts]
+respkit-demo = "examples.demo_rename_proposal.__main__:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["respkit", "respkit.*", "examples", "examples.*"]
+exclude = ["tests*", "scripts*"]
+
+[tool.setuptools.package-data]
+"examples.demo_rename_proposal" = ["prompts/*.md"]
 
 [tool.pytest.ini_options]
 addopts = ["-q"]

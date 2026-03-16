@@ -241,7 +241,7 @@ Observed one pass on a 200-file live corpus:
 | Metric | `sample200_run1` | `sample200_run2` | `sample200_run3` |
 | --- | ---: | ---: | ---: |
 | wall-clock (manifest span) | `00:15:55` | `00:07:24` | `00:07:12` |
-| wall-clock (`/usr/bin/time real`) | `~16:00` | `7m30.65s` | `7m11.95s` |
+| wall-clock (`/usr/bin/time real`) | `~16:00` | `7m30.65s` | `7m19.49s` |
 | proposal rows | 200 | 200 | 200 |
 | proposal success | 197 | 194 | 199 |
 | proposal provider_error | 3 | 6 | 1 |
@@ -253,7 +253,7 @@ Observed one pass on a 200-file live corpus:
 
 Net effect:
 - review tail stayed dominated by long but bounded per-item review latency, not serialized queueing.
-- end-to-end wall-clock changed from `7m24s` to `7m12s` (`sample200_run2 -> sample200_run3`).
+- end-to-end wall-clock changed from `7m24s` to `7m19s` (`sample200_run2 -> sample200_run3`).
 - counts/quality broadly stable with actor-attribution still the largest remaining fail mode, improved from 23→19 fails.
 
 ### `sample50` follow-up (task-quality refinements)

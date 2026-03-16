@@ -93,6 +93,12 @@ The public example is intentionally synthetic:
 
 This example uses only synthetic names/entities and works without corpus-specific data.
 
+For a generic SDK-level example of the new corpus adjudication ledger abstraction, use:
+
+```bash
+python examples/demo_ledger.py
+```
+
 ## Run the example
 
 ```bash
@@ -183,6 +189,138 @@ Each task run writes per-item artifacts under:
 The run metadata includes provider timing, status, and chosen model.
 
 `manifest.jsonl` is append-only and one row is written per manifest action invocation.
+
+## Ledger API (SDK)
+
+`respkit` also ships a generic corpus adjudication ledger for tasks that iterate over many items and need proposal/review/human/apply coordination.
+
+- module: `respkit.ledger`
+- storage: JSONL append-only (`LedgerStore`)
+- machine/human state is split:
+  - machine: `not_run`, `proposed`, `reviewed`, `provider_error`, `apply_ready`, `applied`, `superseded`
+  - human: `needs_review`, `approved`, `rejected`
+- optional task-specific payloads stored in `extras: dict[str, Any]`
+- optional apply hooks with optional clean-tree guard
+- per-stage provenance and run identifiers
+- `applied_in_commit` is separate from `apply_code_commit`:
+  - `apply_code_commit`: code hash when apply handler is invoked
+  - `applied_in_commit`: commit hash where resulting filesystem changes are captured, if available
+
+### Core API
+
+- `LedgerStore(ledger_path)` — create/open a ledger
+- `create_or_update_row(...)` — create or update shared metadata for an item
+- `record_proposal(...)` — write proposal payload/result and status
+- `record_review(...)` — write review payload/result and status
+- `record_human_decision(...)` — write human decision and transition state
+- `record_apply(...)` — write apply payload/result and transition state
+- `mark_superseded(...)` — mark historical rows as superseded
+- `query_rows(LedgerQuery(...))` — select rows for review/retry/apply planning
+- `run_apply(...)` — execute optional apply callback with dry-run and clean-tree policy options
+- `export_csv(path, query=...)` — produce human-review friendly CSV
+
+### Query examples
+
+- unresolved only: `LedgerQuery(task_name=task_name, unresolved_only=True)`
+- provider errors only: `LedgerQuery(provider_error_only=True)`
+- rejected only: `LedgerQuery(rejected_only=True)`
+- not approved only: `LedgerQuery(not_approved_only=True)`
+- only unresolved & rerun eligible: `LedgerQuery(unresolved_only=True, rerun_eligible_only=True)`
+- include/exclude controls:
+  - `LedgerQuery(include_approved=False)`
+  - `LedgerQuery(include_superseded=True)`
+
+Minimal example:
+
+```python
+from pathlib import Path
+
+from respkit.ledger import (
+    ApplyPolicy,
+    HumanDecision,
+    LedgerQuery,
+    LedgerStore,
+    MachineStatus,
+)
+
+ledger = LedgerStore(Path(".my_ledger.jsonl"))
+task_name = "generic-corpus-task"
+
+row = ledger.record_proposal(
+    task_name=task_name,
+    item_id="item-001",
+    item_locator="docs/file-a.txt",
+    proposal_payload={"op": "normalize_section_headers"},
+    proposal_result={"status": "ok"},
+)
+
+row = ledger.record_review(
+    task_name=task_name,
+    item_id="item-001",
+    review_payload={"risk": "low"},
+    review_result={"accept": True},
+)
+
+row = ledger.record_human_decision(
+    task_name=task_name,
+    item_id="item-001",
+    decision=HumanDecision.APPROVED,
+)
+
+ready = ledger.query_rows(
+    LedgerQuery(task_name=task_name, unresolved_only=True, include_approved=False)
+)
+print([r.item_id for r in ready])  # e.g. ["item-001"]
+
+apply_results = ledger.run_apply(
+    query=LedgerQuery(task_name=task_name, unresolved_only=True),
+    callback=lambda _row, dry_run: (
+        {"op": "apply"} if dry_run else {"op": "apply"},
+        {"status": "ok"},
+    ),
+    dry_run=True,
+)
+
+# Example of guarded non-dry-run apply (will require clean working tree when enabled)
+ledger.run_apply(
+    query=LedgerQuery(task_name=task_name, unresolved_only=True),
+    callback=lambda _row, dry_run: ({"op": "apply"}, {"status": "applied"}),
+    dry_run=False,
+    policy=ApplyPolicy(require_clean_working_tree=True, working_directory=Path(".")),
+)
+```
+
+Example fields in one row include:
+
+- `task_name`, `item_id`, `item_locator`, `input_fingerprint`, `rerun_eligible`
+- `proposal_payload`/`review_payload`/`apply_payload` and result fields
+- `proposal_run_id`/`review_run_id`/`human_decision_run_id`/`apply_run_id`
+- `proposal_code_commit`/`review_code_commit`/`human_decision_code_commit`/`apply_code_commit`
+- `applied_in_commit` (commit captured after mutation is observed, if enabled)
+- timestamp fields (`created_at`, `updated_at`, stage-specific recorded times)
+
+### Stage-level provenance
+
+- commit fields capture the ledger code provenance at the time each stage is recorded:
+  - `proposal_code_commit`
+  - `review_code_commit`
+  - `human_decision_code_commit`
+  - `apply_code_commit`
+- `applied_in_commit` is reserved for capturing the commit that contains code changes resulting from apply output (for example, after your external workflow commits files).
+
+### Demo command
+
+Run the generic ledger demo:
+
+```bash
+PYTHONPATH=. python3 examples/demo_ledger.py
+```
+
+Target explicit paths:
+
+```bash
+PYTHONPATH=. python3 examples/demo_ledger.py --repo /tmp/corpus_repo --ledger /tmp/corpus_ledger.jsonl
+```
 
 ## Local test fixtures
 

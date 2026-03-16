@@ -44,9 +44,121 @@ _QUOTED_TIME_PATTERN = re.compile(
 
 _THREAD_SEPARATOR_PATTERNS = (
     re.compile(r"(?im)^\s*-{2,}\s*(original message|forwarded message)\s*-{2,}\s*$"),
+    re.compile(r"(?im)^-{5,}\s*$"),
     re.compile(r"(?im)^On .+wrote:\s*$"),
     re.compile(r"(?im)^>+\s*from:\s+"),
 )
+
+_GENERIC_ACTOR_LABELS = {
+    "assistant principal",
+    "care",
+    "client",
+    "parent",
+    "school official",
+    "student",
+    "teacher",
+    "system",
+    "principal",
+}
+
+_WEAK_FILENAME_TOKENS = {
+    "care",
+    "cio",
+    "client",
+    "plus",
+    "re",
+    "school",
+    "dcps",
+    "text",
+    "txt",
+}
+_GENERIC_ACTOR_LABELS.update(_WEAK_FILENAME_TOKENS)
+
+_SLUG_RETAIN_STOPWORDS = {
+    "and",
+    "for",
+    "of",
+    "the",
+    "to",
+    "in",
+    "on",
+    "at",
+    "with",
+    "from",
+    "re",
+}
+
+_THREAD_MESSAGE_START_PATTERN = re.compile(r"(?im)^MESSAGE\s+1\s+OF\s+\d+\s*$")
+_THREAD_MESSAGE_NEXT_PATTERN = re.compile(r"(?im)^MESSAGE\s+[2-9]\d*\s+OF\s+\d+\s*$")
+
+
+_DATE_HEADER_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("date_utc", r"(?im)^\s*date_utc\s*:\s*(.+)$"),
+    ("date", r"(?im)^\s*date\s*:\s*(.+)$"),
+    ("export_utc", r"(?im)^\s*export_utc\s*:\s*(.+)$"),
+)
+
+
+_TIME_HEADER_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("time", r"(?im)^\s*time\s*:\s*(.+)$"),
+)
+
+
+_SENDER_PATTERNS = (
+    r"(?im)^(?![\t ]*>)(?:from|sender|sent\s+by)\s*:\s*([^\n]+)$",
+    r"(?im)^(?![\t ]*> )signature\s*:\s*([^\n]+)$",
+)
+
+_QUOTED_SENDER_PATTERNS = (
+    r"(?im)^\s*>+\s*(?:from|sender|sent\s+by)\s*:\s*([^\n]+)$",
+)
+
+_FIRST_PERSON_PATTERNS = (
+    r"(?im)^\s*I\s+am\s+the\s+([^\n,.;:]+)",
+    r"(?im)^\s*We\s+are\s+the\s+([^\n,.;:]+)",
+    r"(?im)^\s*I\s+wrote\s+as\s+([^\n,.;:]+)",
+)
+
+_RECIPIENT_PATTERNS = (
+    r"(?im)^\s*dear\s+([^\n,]+)",
+    r"(?im)^\s*(?:to|cc|bcc|recipient)\s*:\s*([^\n]+)",
+)
+
+_HEADER_NAME_PATTERNS = (
+    r"(?im)^(?![\t ]*>)(?:from|sender|sent\s+by)\s*:\s*(.+)$",
+    r"(?im)^\s*(?:to|cc|bcc)\s*:\s*(.+)$",
+)
+
+_SPEAKER_LINE_PATTERN = re.compile(r"(?im)^([A-Za-z][A-Za-z'\-. ]+[A-Za-z])\s*:\s*$")
+
+_COMMA_FIRST_NAME_PATTERN = re.compile(r"^([\w'\-. ]+),\s*([\w'\-. ]+)")
+
+_MONTHS = {
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
+}
 
 
 _ROLE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -67,21 +179,96 @@ _ROLE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("parent", (r"\bparent\b", r"\bparents\b")),
 )
 
-_SENDER_PATTERNS = (
-    r"(?im)^\s*(?:from|sender|sent\s+by)\s*:\s*([^\n]+)$",
-    r"(?im)^\s*signature\s*:\s*([^\n]+)$",
-)
 
-_FIRST_PERSON_PATTERNS = (
-    r"(?im)^\s*I\s+am\s+the\s+([^\n,.;:]+)",
-    r"(?im)^\s*We\s+are\s+the\s+([^\n,.;:]+)",
-    r"(?im)^\s*I\s+wrote\s+as\s+([^\n,.;:]+)",
-)
+def _extract_actor_from_header(raw_sender: str) -> tuple[str | None, str | None]:
+    if not raw_sender:
+        return None, None
 
-_RECIPIENT_PATTERNS = (
-    r"(?im)^\s*dear\s+([^\n,]+)",
-    r"(?im)^\s*(?:to|cc|bcc|recipient)\s*:\s*([^\n]+)",
-)
+    no_email = re.sub(r"<[^>]+>", " ", raw_sender)
+    no_email = re.sub(r"\([^)]*\)", " ", no_email)
+    no_email = re.sub(r"\s+", " ", no_email).strip(" \"'<>-")
+    if not no_email:
+        return None, None
+
+    lowered = no_email.lower()
+    if lowered in {"", "n/a", "na", "none"}:
+        return None, None
+
+    role = _find_role_in_text(no_email)
+    match = _COMMA_FIRST_NAME_PATTERN.match(no_email)
+    if match:
+        first = _normalize_actor_text(match.group(2))
+        last = _normalize_actor_text(match.group(1))
+        if first and last:
+            return f"{first} {last}", role
+
+    cleaned = re.sub(
+        r"^(?:assistant\s+principal|deputy\s+principal|vice\s+principal|assistant\s+principal|assistant\s+pr\.?|assistant\s*manager|principal\s+assistant|principal|director|school\s+counselor|school\s+psychologist|care\s+team|school\s+staff|school\s+official)\s+",
+        "",
+        no_email,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"^(?:mr|mrs|miss|ms|m?x|dr|prof|professor)\.?\s+", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"[,()]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" \"'<>-")
+    return _normalize_actor_text(cleaned), role
+
+
+def _coalesce_name_from_header(raw_sender: str) -> str | None:
+    return _extract_actor_from_header(raw_sender)[0]
+
+
+def _is_more_specific_role(current_actor: str, candidate_actor: str) -> bool:
+    if current_actor == candidate_actor:
+        return False
+    specificity_hierarchy = {
+        "principal": 10,
+        "assistant principal": 20,
+        "vice principal": 18,
+        "deputy principal": 18,
+        "director": 14,
+        "care": 12,
+        "teacher": 8,
+        "school counselor": 9,
+        "school psychologist": 9,
+        "parent": 11,
+        "system": 6,
+        "client": 6,
+        "student": 7,
+    }
+    current_value = specificity_hierarchy.get(current_actor.strip().lower(), 0)
+    candidate_value = specificity_hierarchy.get(candidate_actor.strip().lower(), 0)
+    if candidate_value > current_value:
+        return True
+    return len(candidate_actor) > len(current_actor)
+
+
+def _is_weak_filename_token(token: str) -> bool:
+    return (token or "").strip().lower() in _WEAK_FILENAME_TOKENS or len(token or "") <= 3
+
+
+def _is_generic_actor_label(actor: str) -> bool:
+    return (actor or "").strip().lower() in _GENERIC_ACTOR_LABELS
+
+
+def _is_name_like(actor: str) -> bool:
+    words = [word for word in (actor or "").strip().lower().split() if word]
+    if len(words) < 2:
+        return False
+    if any(not word.replace("-", "").replace("'", "").isalpha() for word in words):
+        return False
+    return set(words) - _GENERIC_ACTOR_LABELS != set()
+
+
+def _looks_like_name(actor: str) -> bool:
+    words = [word for word in (actor or "").strip().lower().split() if word]
+    if len(words) < 2:
+        return False
+    return all(re.fullmatch(r"[a-z'\-]+", word) for word in words)
+
+
+def _looks_like_actor_role(actor: str) -> bool:
+    return _find_role_anchor(actor or "") is not None
 
 
 def _normalize_actor_text(raw: str) -> str | None:
@@ -118,7 +305,55 @@ def _find_role_in_text(text: str) -> str | None:
     return None
 
 
+def _find_sender_lines(text: str, quoted: bool = False) -> list[tuple[str | None, str | None]]:
+    patterns = _QUOTED_SENDER_PATTERNS if quoted else _SENDER_PATTERNS
+    senders: list[tuple[str | None, str | None]] = []
+    for line in text.splitlines():
+        for pattern in patterns:
+            match = re.search(pattern, line)
+            if match:
+                name, role = _extract_actor_from_header(match.group(1))
+                senders.append((name, role))
+                break
+    return senders
+
+
+def _find_first_person_lines(text: str) -> list[str]:
+    values: list[str] = []
+    for line in text.splitlines():
+        for pattern in _FIRST_PERSON_PATTERNS:
+            match = re.search(pattern, line)
+            if match:
+                actor = _find_role_anchor(match.group(1))
+                if actor:
+                    values.append(actor)
+                break
+    return values
+
+
+def _find_recipient_lines(text: str) -> list[str]:
+    values: list[str] = []
+    for line in text.splitlines():
+        for pattern in _RECIPIENT_PATTERNS:
+            match = re.search(pattern, line)
+            if match:
+                actor = _find_role_anchor(match.group(1))
+                if actor:
+                    values.append(actor)
+                break
+    return values
+
+
 def _split_current_text(text: str) -> tuple[str, str]:
+    message_start = _THREAD_MESSAGE_START_PATTERN.search(text)
+    if message_start:
+        post_start = text[message_start.end() :]
+        message_next = _THREAD_MESSAGE_NEXT_PATTERN.search(post_start)
+        if message_next:
+            next_start = message_start.end() + message_next.start()
+            return text[message_start.end() : next_start].rstrip(), text[next_start:].lstrip()
+        return text[message_start.end() :].lstrip(), ""
+
     earliest = None
     for pattern in _THREAD_SEPARATOR_PATTERNS:
         match = pattern.search(text)
@@ -129,35 +364,17 @@ def _split_current_text(text: str) -> tuple[str, str]:
     return text[:earliest].rstrip(), text[earliest:].lstrip()
 
 
-def _normalize_role(text: str) -> str:
-    return text.strip(" -_").lower()
-
-
-def _is_more_specific_role(current_actor: str, candidate_actor: str) -> bool:
-    if current_actor == candidate_actor:
+def _actor_signal_is_concrete(value: str | None) -> bool:
+    if not value:
         return False
-
-    specificity_hierarchy = {
-        "principal": 10,
-        "assistant principal": 20,
-        "vice principal": 18,
-        "deputy principal": 18,
-        "director": 14,
-        "care": 12,
-        "teacher": 8,
-        "school counselor": 9,
-        "school psychologist": 9,
-        "parent": 11,
-        "system": 6,
-        "client": 6,
-        "student": 7,
-    }
-    current_value = specificity_hierarchy.get(_normalize_role(current_actor), 0)
-    candidate_value = specificity_hierarchy.get(_normalize_role(candidate_actor), 0)
-    if candidate_value > current_value:
-        return True
-
-    return len(candidate_actor) > len(current_actor)
+    normalized = value.strip().lower()
+    if normalized in _GENERIC_ACTOR_LABELS:
+        return False
+    if len(normalized) <= 3:
+        return False
+    if _is_weak_filename_token(normalized):
+        return False
+    return True
 
 
 def _extract_actor_signals(
@@ -165,57 +382,125 @@ def _extract_actor_signals(
     text: str,
 ) -> tuple[str, str, list[str], bool]:
     current_text, _ = _split_current_text(text)
-    signals = OrderedDict[str, str]()
     thread_ambiguous = _split_current_text(text)[1] != ""
+
+    signals = OrderedDict[str, str]()
+    actor_values: list[str] = []
 
     def _add_signal(source: str, value: str | None) -> None:
         if not value:
             return
+        normalized = value.strip().lower()
+        if not normalized:
+            return
         if source in signals:
             return
-        signals[source] = value
+        signals[source] = normalized
+        actor_values.append(normalized)
 
-    if path is not None:
-        filename_actor = _find_role_in_text(path.name.replace("-", " ").replace("_", " "))
-        if filename_actor:
-            _add_signal("filename", filename_actor)
+    source_token = _first_alpha_token(path.name if path is not None else "")
+    if source_token:
+        _add_signal("filename_token", source_token)
 
-    for pattern in _SENDER_PATTERNS:
-        match = re.search(pattern, current_text)
+    filename_role = _find_role_in_text(path.name.replace("-", " ").replace("_", " ")) if path is not None else None
+    if filename_role:
+        _add_signal("filename_role", filename_role)
+
+    sender_lines = _find_sender_lines(current_text)
+    for sender_name, sender_role in sender_lines:
+        _add_signal("sender_name", sender_name)
+        if sender_name and sender_role and sender_role != sender_name:
+            _add_signal("sender_role", sender_role)
+        break
+
+    for value in _find_first_person_lines(current_text):
+        if value:
+            _add_signal("first_person", value)
+            break
+
+    for value in _find_recipient_lines(current_text):
+        if value:
+            _add_signal("recipient", value)
+            break
+
+    # Parse speaker lines from transcripts, e.g. "Kelly Mastracchio:"
+    for line in current_text.splitlines():
+        match = _SPEAKER_LINE_PATTERN.match(line)
         if match:
-            actor = _find_role_anchor(match.group(1))
-            if actor:
-                _add_signal("sender", actor)
-                break
+            speaker = _normalize_actor_text(match.group(1))
+            if speaker:
+                _add_signal("speaker", speaker)
+            break
 
-    for pattern in _FIRST_PERSON_PATTERNS:
-        match = re.search(pattern, current_text)
-        if match:
-            actor = _find_role_anchor(match.group(1))
-            if actor:
-                _add_signal("first_person", actor)
-                break
-
-    for pattern in _RECIPIENT_PATTERNS:
-        match = re.search(pattern, current_text)
-        if match:
-            actor = _find_role_anchor(match.group(1))
-            if actor:
-                _add_signal("recipient", actor)
-                break
+    for value in _find_recipient_lines(text):
+        if value and "recipient_body" not in signals:
+            _add_signal("recipient_body", value)
+            break
 
     body_actor = _find_role_in_text(current_text)
     if body_actor:
         _add_signal("body", body_actor)
 
-    actor_anchor_sources = list(signals.keys())
-    actor_anchor: str | None = None
-    actor_anchor_source: str | None = None
-    for source in ("filename", "sender", "first_person", "recipient", "body"):
-        if source in signals:
-            actor_anchor = signals[source]
-            actor_anchor_source = source
-            break
+    for quoted_name, quoted_role in _find_sender_lines(current_text, quoted=True):
+        if quoted_name:
+            _add_signal("sender_quoted_name", quoted_name)
+        if quoted_role:
+            _add_signal("sender_quoted_role", quoted_role)
+        break
+
+    source_token_concrete = source_token and _actor_signal_is_concrete(source_token)
+
+    actor_anchor_source = ""
+    actor_anchor = ""
+
+    candidate_sources = (
+        ("sender_role", 350),
+        ("sender_name", 340),
+        ("filename_role", 300),
+        ("body", 290),
+        ("speaker", 260),
+        ("first_person", 230),
+        ("filename_token", 180 if source_token_concrete else 90),
+        ("sender_quoted_role", 180),
+        ("sender_quoted_name", 160),
+        ("recipient", 120),
+        ("recipient_body", 110),
+    )
+
+    for source, _ in sorted(candidate_sources, key=lambda item: item[1], reverse=True):
+        if source not in signals:
+            continue
+        candidate = signals[source]
+        if not candidate:
+            continue
+
+        if source == "filename_token" and not source_token_concrete:
+            continue
+
+        if source in {"recipient", "recipient_body"}:
+            if any(strong in signals for strong in ("sender_role", "sender_name", "filename_token", "speaker", "filename_role")):
+                continue
+
+        if source == "body":
+            if any(strong in signals for strong in ("sender_role", "sender_name", "filename_role")):
+                continue
+
+        if source.startswith("sender_quoted") and any(
+            strong in signals
+            for strong in ("sender_name", "sender_role", "speaker", "filename_token", "filename_role")
+        ):
+            continue
+
+        if source in {"sender_name", "filename_token"} and _is_generic_actor_label(candidate):
+            continue
+
+        actor_anchor_source = source
+        actor_anchor = candidate
+        break
+
+    if not actor_anchor and signals:
+        actor_anchor_source = next(iter(signals.keys()))
+        actor_anchor = signals[actor_anchor_source]
 
     if actor_anchor is None:
         actor_anchor = None
@@ -259,6 +544,95 @@ def _extract_time_from_text(text: str) -> str | None:
     return None
 
 
+def _normalize_time(hour: int, minute: int) -> str:
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _parse_time_value(raw_time: str) -> str | None:
+    match = re.match(r"^(\d{1,2}):([0-5]\d)(?::[0-5]\d)?\s*(am|pm)?$", raw_time.strip(), re.IGNORECASE)
+    if not match:
+        return None
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    am_pm = (match.group(3) or "").lower()
+    if am_pm == "pm" and hour != 12:
+        hour += 12
+    elif am_pm == "am" and hour == 12:
+        hour = 0
+    return _normalize_time(hour, minute)
+
+
+def _parse_header_date(raw_value: str) -> str | None:
+    value = raw_value.strip()
+    if not value:
+        return None
+
+    normalized = re.sub(r"\s+", " ", value)
+    iso_match = re.match(
+        r"(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::\d{2})?(?:[+-]\d{2}:?\d{2}|Z)?",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if iso_match:
+        year, month, day = iso_match.group(1), iso_match.group(2), iso_match.group(3)
+        return f"{year}-{month}-{day}"
+
+    text_match = re.match(
+        r"(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s*)?([A-Za-z]{3,9})\s+(\d{1,2}),\s+(\d{4})(?:\s+at\s+(.+))?",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if text_match:
+        month_name = text_match.group(1).lower().strip(".")
+        day = int(text_match.group(2))
+        year = int(text_match.group(3))
+        month = _MONTHS.get(month_name[:3], _MONTHS.get(month_name))
+        if month is None or not (1 <= day <= 31):
+            return None
+        return f"{year:04d}-{month:02d}-{day:02d}"
+
+    ymd_match = re.match(r"(\d{4})-(\d{2})-(\d{2})", normalized)
+    if ymd_match:
+        year, month, day = ymd_match.groups()
+        return f"{year}-{month}-{day}"
+
+    return None
+
+
+def _parse_header_time(raw_value: str) -> str | None:
+    value = raw_value.strip()
+    match = re.search(r"\b(\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?)\b", value, flags=re.IGNORECASE)
+    if not match:
+        return _parse_time_value(value)
+    return _parse_time_value(match.group(1))
+
+
+def _extract_explicit_header_timestamp(text: str) -> tuple[str | None, str | None]:
+    current_text, _ = _split_current_text(text)
+    candidate_date: str | None = None
+    candidate_time: str | None = None
+
+    for label, pattern in _DATE_HEADER_PATTERNS:
+        for match in re.finditer(pattern, current_text):
+            parsed_date = _parse_header_date(match.group(1))
+            if parsed_date:
+                candidate_date = parsed_date
+                break
+        if candidate_date:
+            break
+
+    for label, pattern in _TIME_HEADER_PATTERNS:
+        for match in re.finditer(pattern, current_text):
+            parsed_time = _parse_header_time(match.group(1))
+            if parsed_time:
+                candidate_time = parsed_time
+                break
+        if candidate_time:
+            break
+
+    return candidate_date, candidate_time
+
+
 def _extract_time_from_filename(filename: str) -> str | None:
     for candidate in (_first(_TIME_PATTERNS[0], filename),):
         if candidate:
@@ -280,6 +654,59 @@ def _extract_time_from_filename(filename: str) -> str | None:
     return None
 
 
+def _extract_date_from_filename(filename: str) -> str | None:
+    if match := re.search(r"(20\d{2})[-_](\d{2})[-_](\d{2})", filename):
+        return f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+    if match := re.search(r"(20\d{2})(\d{2})(\d{2})", filename):
+        return f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+    return None
+
+
+def _select_explicit_timestamp(
+    filename_date: str | None, filename_time: str | None, header_date: str | None, header_time: str | None
+) -> tuple[str | None, str | None]:
+    if header_date:
+        if filename_date is None or header_date != filename_date:
+            filename_date = header_date
+    if header_time:
+        if filename_time is None or header_time != filename_time:
+            filename_time = header_time
+    return filename_date, filename_time
+
+
+def _extract_filename_slug_tokens(filename: str) -> list[str]:
+    raw_tokens = re.split(r"[^a-z0-9]+", filename.lower())
+    ordered: list[str] = []
+    for token in raw_tokens:
+        if len(token) < 2:
+            continue
+        if _is_weak_filename_token(token) or token in _SLUG_RETAIN_STOPWORDS:
+            continue
+        if token not in ordered:
+            ordered.append(token)
+    return ordered
+
+
+def _enhance_slug(slug: str | None, source_filename: str, candidate_date: str | None) -> str:
+    normalized_slug = _normalize_actor_text(slug or "") or ""
+    if not normalized_slug:
+        return ""
+    slug_tokens = [token for token in normalized_slug.split("-") if token]
+    if len(slug_tokens) >= 4:
+        return "-".join(slug_tokens)
+
+    for token in _extract_filename_slug_tokens(source_filename):
+        if len(slug_tokens) >= 4:
+            break
+        if token not in slug_tokens:
+            slug_tokens.append(token)
+
+    if candidate_date and candidate_date.replace("-", "") not in slug_tokens and len(slug_tokens) < 5:
+        slug_tokens.append(candidate_date.replace("-", ""))
+
+    return "-".join(slug_tokens[:5])
+
+
 def _confidence_cap_for_actor_evidence(
     confidence: float,
     actor_anchor_source: str,
@@ -288,7 +715,7 @@ def _confidence_cap_for_actor_evidence(
     thread_ambiguous: bool,
 ) -> float:
     cap = 1.0
-    if actor_anchor_source in {"recipient", "body"}:
+    if actor_anchor_source in {"recipient", "recipient_body", "body"}:
         cap = min(cap, 0.75)
     if mixed_actor_evidence:
         cap = min(cap, 0.7)
@@ -325,13 +752,17 @@ def extract_anchors(path: Path | None, text: str) -> dict[str, str | None]:
 
     old_filename = path.name if path else ""
     actor_anchor, actor_anchor_source, actor_values, mixed_actor_evidence = _extract_actor_signals(path, text)
+    filename_date = _extract_date_from_filename(old_filename)
     filename_time = _extract_time_from_filename(old_filename)
-    candidate_time = filename_time if filename_time else _extract_time_from_text(text)
+    header_date, header_time = _extract_explicit_header_timestamp(text)
+    candidate_date, candidate_time = _select_explicit_timestamp(filename_date, filename_time, header_date, header_time)
+    if candidate_time is None:
+        candidate_time = _extract_time_from_text(text)
     _, thread_tail = _split_current_text(text)
     return {
         "old_filename": old_filename,
         "source_token": _first_alpha_token(old_filename) or "",
-        "candidate_date": _first(r"\d{4}-\d{2}-\d{2}|\d{8}", old_filename),
+        "candidate_date": candidate_date,
         "candidate_time": candidate_time,
         "actor_anchor": actor_anchor,
         "actor_anchor_source": actor_anchor_source,
@@ -364,23 +795,32 @@ def _canonicalize_actor(
     if not actor_anchor:
         return actor
 
-    if actor_anchor_source in {"sender", "first_person"}:
-        if actor_anchor not in {"", actor} and (
-            actor in {"principal", "teacher", "parent", "system", "care", "client", "director", "student", "assistant principal"}
-            or actor in {"assistant principal", "principal"} and actor_anchor in {"assistant principal", "vice principal", "deputy principal"}
-        ):
+    actor_sources_with_strength = {
+        "sender_name",
+        "sender_role",
+        "filename_role",
+        "filename_token",
+        "speaker",
+        "first_person",
+        "recipient",
+        "recipient_body",
+        "body",
+    }
+    source_strength = actor_anchor_source in actor_sources_with_strength
+
+    if source_strength and _actor_signal_is_concrete(actor_anchor):
+        if actor in {"principal", "teacher", "parent", "director", "student", "care", "client", "system", "assistant principal"}:
+            return actor_anchor
+        if actor in {"assistant principal", "principal"} and actor_anchor not in {"care", "client", "system", "teacher"}:
+            return actor_anchor
+        if actor_anchor_source in {"sender_name", "sender_role", "speaker"} and _looks_like_name(actor_anchor):
             return actor_anchor
 
-    if actor_anchor_source == "filename":
-        if actor_anchor in {"assistant principal", "vice principal", "deputy principal", "principal", "director", "teacher", "parent", "student"}:
-            if actor in {"principal", "assistant principal", "teacher", "parent", "system", "care", "client", "director", "student"}:
-                return actor_anchor
-
-    if actor_anchor_source == "body":
-        if actor in {"principal"} and actor_anchor in {"assistant principal", "vice principal", "deputy principal"}:
+    if source_strength and actor in _GENERIC_ACTOR_LABELS and actor != actor_anchor:
+        if actor_anchor_source in {"sender_name", "sender_role", "filename_role", "filename_token", "speaker", "first_person"}:
             return actor_anchor
 
-    if actor_anchor_source in {"sender", "first_person", "filename"} and _is_more_specific_role(actor, actor_anchor):
+    if source_strength and _is_more_specific_role(actor, actor_anchor or ""):
         return actor_anchor
 
     return actor

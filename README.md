@@ -236,26 +236,40 @@ Observed one pass on a 200-file live corpus:
 - Baseline `sample200_run1`: long tail persisted in review with max concurrent review of `1`.
 - Tuned `sample200_run2`: `--max-concurrency 8 --review --review-max-concurrency 8 --provider-timeout 30`.
 
-### Comparison (`sample200_run1` vs `sample200_run2`)
+### Comparison (`sample200_run1` vs `sample200_run2` vs `sample200_run3`)
 
-| Metric | `sample200_run1` | `sample200_run2` |
-| --- | ---: | ---: |
-| wall-clock (manifest span) | `00:15:55` | `00:07:24` |
-| wall-clock (`/usr/bin/time real`) | `~16:00` (from batch run) | `7m30.65s` |
-| proposal rows | 200 | 200 |
-| proposal success | 197 | 194 |
-| proposal provider_error | 3 | 6 |
-| review rows | 197 | 194 |
-| review success | 196 | 194 |
-| review provider_error | 1 | 0 |
-| estimated timeout-like errors (provider_error) | 3 proposal / 1 review | 6 proposal / 0 review |
-| review tail span | `11m58s` | `3m11s` |
-| quality (`review` decision) | pass 171, fail 24, uncertain 1, no decision 1 | pass 170, fail 23, uncertain 1 |
+| Metric | `sample200_run1` | `sample200_run2` | `sample200_run3` |
+| --- | ---: | ---: | ---: |
+| wall-clock (manifest span) | `00:15:55` | `00:07:24` | `00:07:12` |
+| wall-clock (`/usr/bin/time real`) | `~16:00` | `7m30.65s` | `7m11.95s` |
+| proposal rows | 200 | 200 | 200 |
+| proposal success | 197 | 194 | 199 |
+| proposal provider_error | 3 | 6 | 1 |
+| review rows | 197 | 194 | 199 |
+| review success | 196 | 194 | 198 |
+| review provider_error | 1 | 0 | 1 |
+| estimated timeout-like errors (`provider_error` containing `timeout`) | 3 proposal / 1 review | 6 proposal / 0 review | 1 proposal / 1 review |
+| quality (`review` decision) | pass 171, fail 24, uncertain 1, no decision 1 | pass 170, fail 23, uncertain 1 | pass 179, fail 19, no decision 1 |
 
 Net effect:
-- review tail reduced by ~73%
-- end-to-end wall-clock reduced by ~53%
-- counts/quality stayed broadly stable; actor attribution remains the main non-pass failure category.
+- review tail stayed dominated by long but bounded per-item review latency, not serialized queueing.
+- end-to-end wall-clock changed from `7m24s` to `7m12s` (`sample200_run2 -> sample200_run3`).
+- counts/quality broadly stable with actor-attribution still the largest remaining fail mode, improved from 23→19 fails.
+
+### `sample50` follow-up (task-quality refinements)
+
+| Metric | `sample50_run_quality` | `sample50_run4` |
+| --- | ---: | ---: |
+| wall-clock (manifest span) | `1m36.8s` | `1m41.8s` |
+| proposal success | 49 | 49 |
+| proposal provider_error | 1 | 1 |
+| review success | 49 | 48 |
+| review provider_error | 0 | 1 |
+| review decision outcome | pass 45, fail 4 | pass 44, fail 4 |
+
+Observations:
+- pass/fail counts were stable for task-level quality work; actor error list changed, with no uncertain decisions introduced.
+
 
 ### Hygiene for future benchmark runs
 

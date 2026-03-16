@@ -27,6 +27,7 @@ class LedgerQuery:
     machine_statuses: set[MachineStatus] | None = None
     human_statuses: set[HumanDecision] | None = None
     limit: int | None = None
+    offset: int | None = None
 
     def matches(self, row: LedgerRow) -> bool:
         """Return True when a row matches this query."""
@@ -130,5 +131,9 @@ class LedgerQuery:
         order_by = f"ORDER BY {prefix}.task_name ASC, {prefix}.item_id ASC"
         if self.limit is not None:
             order_by += f" LIMIT {int(self.limit)}"
+            if self.offset is not None:
+                order_by += f" OFFSET {int(self.offset)}"
+        elif self.offset is not None:
+            order_by += f" LIMIT -1 OFFSET {int(self.offset)}"
 
         return where_clause, params, order_by

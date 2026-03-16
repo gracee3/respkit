@@ -541,6 +541,41 @@ class LedgerStore:
                 rows.append(_payload_to_row(payload))
         return rows
 
+    def get_row_events(self, task_name: str, item_id: str) -> list[dict[str, Any]]:
+        """Return ledger event history records with event metadata."""
+
+        cursor = self._conn.execute(
+            """
+            SELECT version, event_type, machine_status, human_status, event_at, event_payload
+            FROM ledger_events
+            WHERE task_name = ? AND item_id = ?
+            ORDER BY version ASC, id ASC;
+            """,
+            (task_name, item_id),
+        )
+        events: list[dict[str, Any]] = []
+        for raw in cursor.fetchall():
+            payload = _parse_payload(raw["event_payload"])
+            if isinstance(payload, dict):
+                payload_value: dict[str, Any] = payload
+            elif payload is None:
+                payload_value = {}
+            else:
+                payload_value = {"value": payload}
+            events.append(
+                {
+                    "task_name": task_name,
+                    "item_id": item_id,
+                    "version": raw["version"],
+                    "event_type": raw["event_type"],
+                    "machine_status": raw["machine_status"],
+                    "human_status": raw["human_status"],
+                    "event_at": raw["event_at"],
+                    "payload": payload_value,
+                }
+            )
+        return events
+
     def get_task_history(self, task_name: str) -> list[dict[str, Any]]:
         cursor = self._conn.execute(
             """

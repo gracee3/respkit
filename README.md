@@ -394,12 +394,129 @@ Run the generic ledger demos:
 PYTHONPATH=. python3 examples/demo_ledger.py
 PYTHONPATH=. python3 examples/demo_ledger_resolver.py
 PYTHONPATH=. python3 examples/demo_ledger_session.py
+PYTHONPATH=. python3 examples/demo_ledger_service.py
 ```
 
 Target explicit paths:
 
 ```bash
 PYTHONPATH=. python3 examples/demo_ledger.py --repo /tmp/corpus_repo --ledger /tmp/corpus_ledger.sqlite
+```
+
+### Ledger service backend (JSON-RPC over stdio)
+
+The SDK also ships a local machine-readable service surface for frontends (CLI, agents, or future Rust/desktop TUI) that drive resolver workflows without duplicating SDK logic.
+
+Start the backend:
+
+```bash
+python -m respkit.service.backend --ledger .my_ledger.sqlite --stdio
+```
+
+Equivalent script entrypoint (after installation):
+
+```bash
+respkit-ledger-service --ledger .my_ledger.sqlite --stdio
+```
+
+Request envelope is JSON-RPC 2.0 with one JSON object per line:
+
+```json
+{"jsonrpc":"2.0","id":"1","method":"rows.list","params":{"task_name":"generic-corpus-task","unresolved_only":true}}
+```
+
+Success and error examples:
+
+```json
+{"jsonrpc":"2.0","id":"1","result":{"rows":[...]}}
+{"jsonrpc":"2.0","id":"9","error":{"code":-32602,"message":"params required","data":"..."}}
+```
+
+Core methods:
+
+- `ledger.open` — health/read metadata
+- `ledger.info` — store/task metadata
+- `ledger.summary` — dashboard counts and by-task buckets
+- `ledger.tasks` — available tasks in the ledger
+- `rows.list` — query rows with ledger filters
+- `rows.get` — full row payload with rendered summary/context
+- `rows.history` — event history
+- `rows.preview` — task-specific preview payload
+- `rows.validate` — validate edits for a row
+- `rows.derive` — derive approved output from edits
+- `rows.decide` — recommendation/apply decision API
+- `actions.list` — list available actions for selected rows
+- `actions.invoke` — run built-in or adapter actions
+- `export` — csv/jsonl/markdown export (inline or to output path)
+- `system.shutdown` — terminate backend process
+
+Generic service usage examples:
+
+```python
+import json
+
+def req(method: str, params: dict) -> str:
+    return json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+
+print(req("ledger.summary", {"task_name": "generic-corpus-task"}))
+print(req("rows.list", {"task_name": "generic-corpus-task", "unresolved_only": True}))
+print(req("rows.get", {"task_name": "generic-corpus-task", "item_id": "item-001"}))
+print(req("rows.history", {"task_name": "generic-corpus-task", "item_id": "item-001"}))
+print(req("rows.decide", {"task_name": "generic-corpus-task", "item_id": "item-001", "action": "approve_with_edit", "apply": False, "edits": {"approved": True}}))
+print(req("rows.decide", {"task_name": "generic-corpus-task", "item_id": "item-001", "action": "approve", "apply": True, "decision_source": "agent", "decision_actor": "local-llm-agent", "decision_note": "approved by policy-bot"}))
+print(req("actions.list", {"task_name": "generic-corpus-task"}))
+print(req("actions.invoke", {"task_name": "generic-corpus-task", "action": "mark_checked", "item_ids": ["item-001"]}))
+```
+
+Decision provenance is preserved on persisted actions:
+
+- `decision_source` (default: `agent` in service default config)
+- `decision_actor` (e.g. `local-llm-agent`, `cli-user`, `batch-policy`)
+- `decision_note`
+- optional `decision_code_commit`
+
+The recommendation mode returns proposed actions without mutating ledger state (`apply: false`).
+
+Adapter-enabled actions are injected via `TaskServiceAdapter` implementations:
+
+```python
+from respkit.service import DefaultTaskServiceAdapter, ActionDescriptor, ActionResult
+from respkit.ledger import HumanDecision, LedgerRow
+
+
+class ToyServiceAdapter(DefaultTaskServiceAdapter):
+    def available_actions(self, row: LedgerRow) -> list[ActionDescriptor]:
+        actions = super().available_actions(row)
+        actions.append(ActionDescriptor(name="mark_checked", description="mark row checked"))
+        return actions
+
+    def execute_action(self, *, row: LedgerRow, action: str, params, store) -> ActionResult:
+        if action != "mark_checked":
+            return super().execute_action(row=row, action=action, params=params, store=store)
+        store.record_human_decision(
+            task_name=row.task_name,
+            item_id=row.item_id,
+            decision=HumanDecision.NEEDS_REVIEW,
+            decision_payload={"mark_checked": True},
+            decision_source="action",
+            decision_actor="adapter",
+            notes="marked by adapter action",
+        )
+        return ActionResult(success=True, message="marked")
+```
+
+Launch backend with this adapter:
+
+```bash
+respkit-ledger-service --ledger .my_ledger.sqlite --adapter module.path:ToyServiceAdapter --stdio
+```
+
+Use whichever concrete adapter module path fits your private task package. The backend contract remains generic and stable; task-specific behavior stays in the adapter.
+
+For a runnable end-to-end toy example, see:
+
+```bash
+PYTHONPATH=. python3 examples/demo_ledger_service.py
 ```
 
 ## Local test fixtures

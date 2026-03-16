@@ -52,8 +52,7 @@ OPEN_WEBUI_VLLM_API_KEY := local
 	logs logs-llm logs-openwebui \
 	healthcheck healthcheck-llm healthcheck-openwebui \
 	models shell clean clean-all \
-	smoke-single smoke-batch smoke \
-	corpus-eval
+	smoke-single smoke-batch smoke
 
 # ── Setup / build ───────────────────────────────────────
 setup:
@@ -241,26 +240,20 @@ SMOKE_MAX_CONCURRENCY ?= 1
 SMOKE_REVIEW_MAX_CONCURRENCY ?= 1
 SMOKE_PROVIDER_TIMEOUT ?= 30
 SMOKE_REVIEW ?=
-CORPUS_DIR ?= tests/fixtures/rename_inputs
-CORPUS_FORMAT ?= csv
-CORPUS_EXPORT ?=
 
 smoke-single:
 	@rm -rf $(SMOKE_OUT)
 	@mkdir -p $(SMOKE_OUT)
-	@python3 -m examples.run_rename_proposal single $(SMOKE_INPUT_FILE) --endpoint $(SMOKE_ENDPOINT) --out $(SMOKE_OUT) --provider-timeout $(SMOKE_PROVIDER_TIMEOUT) $(if $(SMOKE_REVIEW),--review,)
+	@python3 -m examples.demo_rename_proposal single $(SMOKE_INPUT_FILE) --endpoint $(SMOKE_ENDPOINT) --out $(SMOKE_OUT) --provider-timeout $(SMOKE_PROVIDER_TIMEOUT) $(if $(SMOKE_REVIEW),--review,)
 
 smoke-batch:
 	@rm -rf $(SMOKE_OUT)
 	@mkdir -p $(SMOKE_OUT)
-	@python3 -m examples.run_rename_proposal batch $(SMOKE_INPUT_DIR) --endpoint $(SMOKE_ENDPOINT) --out $(SMOKE_OUT) --max-concurrency $(SMOKE_MAX_CONCURRENCY) --review-max-concurrency $(SMOKE_REVIEW_MAX_CONCURRENCY) --provider-timeout $(SMOKE_PROVIDER_TIMEOUT) $(if $(SMOKE_REVIEW),--review,)
+	@python3 -m examples.demo_rename_proposal batch $(SMOKE_INPUT_DIR) --endpoint $(SMOKE_ENDPOINT) --out $(SMOKE_OUT) --max-concurrency $(SMOKE_MAX_CONCURRENCY) --review-max-concurrency $(SMOKE_REVIEW_MAX_CONCURRENCY) --provider-timeout $(SMOKE_PROVIDER_TIMEOUT) $(if $(SMOKE_REVIEW),--review,)
 
 smoke:
 	@$(MAKE) smoke-single
 	@$(MAKE) smoke-batch
-
-corpus-eval:
-	@python3 scripts/evaluate_corpus.py $(CORPUS_DIR) --endpoint $(SMOKE_ENDPOINT) --out $(SMOKE_OUT) --format $(CORPUS_FORMAT) $(if $(CORPUS_EXPORT),--export $(CORPUS_EXPORT),)
 
 shell:
 	@for c in $(CONTAINERS); do \

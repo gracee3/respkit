@@ -12,7 +12,7 @@ REVIEW="${SMOKE_REVIEW:-}"
 rm -rf "${OUT}"
 mkdir -p "${OUT}"
 COMMAND_ARGS=(
-  python3 -m examples.run_rename_proposal batch
+  python3 -m examples.demo_rename_proposal batch
   "${INPUT_DIR}"
   --endpoint "${ENDPOINT}"
   --out "${OUT}"

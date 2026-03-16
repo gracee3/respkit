@@ -10,7 +10,7 @@ REVIEW="${SMOKE_REVIEW:-}"
 rm -rf "${OUT}"
 mkdir -p "${OUT}"
 COMMAND_ARGS=(
-  python3 -m examples.run_rename_proposal single
+  python3 -m examples.demo_rename_proposal single
   "${INPUT}"
   --endpoint "${ENDPOINT}"
   --out "${OUT}"
@@ -18,7 +18,7 @@ COMMAND_ARGS=(
 )
 
 if [ -n "${REVIEW}" ]; then
-    COMMAND_ARGS+=(--review)
+  COMMAND_ARGS+=(--review)
 fi
 
 "${COMMAND_ARGS[@]}"

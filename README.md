@@ -1,124 +1,104 @@
 # respkit
 
-RespKit is a small, reusable Python SDK for structured, prompt-driven LLM tasks over normalized text inputs.
+`respkit` is a small reusable Python SDK for structured LLM tasks over normalized text input.
 
-V1 is intentionally narrow:
-- text-only input
-- OpenAI-compatible Responses API only (single provider adapter)
-- one-item execution + batch wrappers built from it
-- schema validation + deterministic repair
-- deterministic filesystem artifacts
-- append-only JSONL manifest
+## What the SDK contains
+
+- `respkit/` — reusable core:
+  - providers (`openai_compatible`, base contract)
+  - runners (`single`, `batch`, `review`)
+  - tasks/contracts
+  - validators and normalization
+  - actions (markdown/json/manifest)
+  - artifacts + manifest writers
+- `examples/` — safe synthetic examples only
+- `tests/` — SDK tests with synthetic fixtures
+
+## Supported shape
+
+Every task uses:
+
+- normalized input (`source_id`, `source_path`, `decoded_text`)
+- prompt template + renderer
+- schema validation
+- deterministic action execution
 - optional review pass
 
-## Repository Layout
+The core execution path remains generic and reusable:
 
-- `respkit/`
-  - `providers/` — provider interface and OpenAI-compatible adapter
-  - `inputs/` — normalized input model
-  - `prompts/` — markdown templates + simple renderer
-  - `contracts/` — schema/validation report helpers
-  - `validators/` — deterministic validators + repair helpers
-  - `actions/` — side-effect actions (markdown, json, manifest)
-  - `artifacts/` — per-run artifact writer and policy
-  - `manifest/` — append-only JSONL manifest writer
-  - `tasks/` — task definitions and result models
-  - `runners/` — single-item, batch, and review runners
-  - `review/` — review package placeholder
-  - `utils/` — small helpers (run id, filesystem)
-- `examples/`
-  - `rename_file_proposal/` — complete example task (with prompts and schemas)
-  - `run_rename_proposal.py` — tiny example entrypoint
-- `tests/` — unit tests for v1 execution surface
+- prompt rendering
+- provider call
+- response parsing + validation
+- artifact capture
+- manifest append
+- optional review runner with optional concurrency
 
-## Implemented in v1
+## Synthetic developer example
 
-- `NormalizedInput` for one item of text text input
-- `LLMProvider` interface and `OpenAICompatibleProvider`
-- markdown prompt loading/rendering with light variable interpolation
-- typed contracts via Pydantic models
-- deterministic validators and fill/trim/enum normalization
-- task definitions with prompt reference, schema, model config, validators, actions
-- actions for markdown + JSON artifact write + manifest append
-- per-run artifact snapshots (`prompt`, `raw_response`, `validated_response`, `validation_report`, `action_results`, metadata)
-- append-only manifest rows
-- `SingleInputRunner`
-- `DirectoryBatchRunner` built on single runner
-- `ReviewRunner`
-- optional review wiring in task definitions
+The public example is intentionally synthetic:
 
-## What is intentionally left out in v1
+- `examples/demo_rename_proposal/`
+  - `task.py` — task wiring and prompt/context builders
+  - `schemas.py` — proposal/review output models
+  - `prompts/` — synthetic prompts
+  - `__main__.py` — CLI entrypoint
 
-- no multimodal inputs
-- no automatic prompt rewriting
-- no multi-provider routing
-- no MCP integration
-- no workflow orchestration layer beyond small runners
+This example uses only synthetic names/entities and works without corpus-specific data.
 
-## Add your own tasks
-
-Create a task module under `examples/` or your own package:
-
-1. Define Pydantic output schema.
-2. Write markdown prompt template.
-3. Build a `TaskDefinition` with:
-   - prompt path
-   - response model
-   - provider model name
-   - optional validators/actions
-   - optional `ReviewPolicy`
-
-Then call a `SingleInputRunner` with your task.
-
-## Running the example task
+## Run the example
 
 ```bash
-python -m examples.run_rename_proposal single /path/to/text.txt --endpoint http://localhost:8000/v1/responses --out .respkit_demo
-python -m examples.run_rename_proposal batch /path/to/text-directory --endpoint http://localhost:8000/v1/responses --out .respkit_demo --review
-```
-
-You can add `--review` to perform the optional second-pass review with the companion task.
-
-Common tuning flags:
-
-- `--max-concurrency N` (proposal phase batch parallelism)
-- `--review-max-concurrency N` (review phase parallelism; default `1`)
-- `--provider-timeout S` (provider request timeout in seconds)
-
-Example tuned run:
-
-```bash
-python -m examples.run_rename_proposal batch /path/to/files \
+python -m examples.demo_rename_proposal single /path/to/file.txt \
   --endpoint http://localhost:8000/v1/responses \
   --out .respkit_demo \
-  --review \
+  --provider-timeout 30
+
+python -m examples.demo_rename_proposal batch /path/to/text-dir \
+  --endpoint http://localhost:8000/v1/responses \
+  --out .respkit_demo \
+  --max-concurrency 4 \
+  --review
+```
+
+You can run the review pass concurrently with:
+
+```bash
+python -m examples.demo_rename_proposal batch /path/to/text-dir \
+  --endpoint http://localhost:8000/v1/responses \
+  --out .respkit_demo \
   --max-concurrency 8 \
-  --review-max-concurrency 4 \
+  --review --review-max-concurrency 4 \
   --provider-timeout 30
 ```
 
-## Local smoke test
+Available flags:
 
-Use the fixtures in `tests/fixtures/rename_inputs/` and run against a local endpoint:
+- `--max-concurrency`: proposal batch parallelism
+- `--review-max-concurrency`: review concurrency (default `1`)
+- `--provider-timeout`: request timeout seconds
+- `--review`: enable optional review pass
 
-```bash
-make smoke-single      # runs one file at tests/fixtures/rename_inputs/clean_easy.txt
-make smoke-batch       # runs all local fixture inputs
-make smoke             # runs single then batch
-```
-
-The smoke targets use `--endpoint http://localhost:8000/v1/responses` by default and write artifacts to `.respkit_smoke`.
-
-You can override:
+## Smoke scripts
 
 ```bash
-make smoke-single SMOKE_ENDPOINT=http://localhost:8000/v1/responses SMOKE_OUT=tmp/smoke
-make smoke-batch SMOKE_MAX_CONCURRENCY=8 SMOKE_REVIEW_MAX_CONCURRENCY=4 SMOKE_PROVIDER_TIMEOUT=30 SMOKE_REVIEW=1 SMOKE_OUT=tmp/smoke
+make smoke-single   # single fixture
+make smoke-batch    # batch fixtures
+make smoke          # runs both
 ```
 
-## Stable run statuses
+Env vars used by smoke targets:
 
-Status values are fixed across runners, run metadata, and manifests:
+- `SMOKE_ENDPOINT` (default `http://localhost:8000/v1/responses`)
+- `SMOKE_MAX_CONCURRENCY` (default `1`)
+- `SMOKE_REVIEW_MAX_CONCURRENCY` (default `1`)
+- `SMOKE_PROVIDER_TIMEOUT` (default `30`)
+- `SMOKE_REVIEW` (set to any non-empty value to enable review)
+
+`scripts/smoke_single.sh` and `scripts/smoke_batch.sh` call the synthetic example by default and can be used outside `make`.
+
+## Status vocabulary
+
+Status values are consistent across runners and manifest rows:
 
 - `success`
 - `preflight_model_not_found`
@@ -128,153 +108,38 @@ Status values are fixed across runners, run metadata, and manifests:
 - `action_failed`
 - `review_failed`
 
-`parse_error` is used only when the provider output cannot be parsed into a structured JSON payload.  
-`validation_failed` is used when the payload parses but does not pass schema/validator checks.
+`parse_error` means the provider output could not be parsed into a JSON payload.
 
-## Batch summary
+## Artifact output
 
-Batch runs now write `batch_summary.json` in the batch output root:
+Each task run writes per-item artifacts under:
 
-```bash
-make smoke-batch SMOKE_OUT=.respkit_smoke
-cat .respkit_smoke/batch_summary.json
+```
+.respkit_demo/
+  artifacts/
+    <task_name>/<run_id>/
+      prompt_template.md
+      prompt.txt
+      provider_request.json
+      raw_response.json
+      parsed_response.json
+      validation_report.json
+      validated_response.json
+      action_results.json
+      run_metadata.json
+      manifest_row.json (if manifest action is configured)
 ```
 
-The command also prints a concise status summary to stdout at end-of-batch.
+The run metadata includes provider timing, status, and chosen model.
 
-## Corpus export
+`manifest.jsonl` is append-only and one row is written per manifest action invocation.
 
-Run a directory and export `source_path,status,kind,actor,slug,confidence`:
+## Local test fixtures
 
-```bash
-make corpus-eval CORPUS_DIR=tests/fixtures/rename_inputs CORPUS_FORMAT=csv CORPUS_EXPORT=tmp/corpus_eval.csv
-```
-
-or directly:
-
-```bash
-python3 scripts/evaluate_corpus.py tests/fixtures/rename_inputs --format csv --export tmp/corpus_eval.csv
-```
-
-By default, `scripts/evaluate_corpus.py` reads existing proposal artifacts from `--out` and does **not** re-run the provider.
-Add `--rerun` only when you explicitly want to regenerate outputs from the model:
-
-```bash
-python3 scripts/evaluate_corpus.py tests/fixtures/rename_inputs --out .respkit_runs/live --rerun --format csv --export tmp/corpus_eval.csv
-```
-
-## Review interpretation
-
-Review output is intentionally narrow:
-
-- `pass` -> accepted
-- `uncertain` -> `review_failed` status, send to human review
-- `fail` -> `review_failed` status, do not auto-accept
-
-## Artifact layout
-
-Each run writes the following files under `artifacts/<task_name>/<run_id>/`:
-
-- `prompt_template.md` — source template snapshot
-- `prompt.txt` — rendered prompt
-- `provider_request.json` — request payload sent to the provider
-- `raw_response.json` — raw provider response
-- `discovered_models.json` — discovered model ids from `/v1/models` preflight
-- `parsed_response.json` — parsed JSON payload when available
-- `validation_report.json` — normalized validation outcome
-- `validated_response.json` — validated output after schema/validator pass
-- `action_results.json` — action execution summaries
-- `run_metadata.json` — run metadata and status
-- `manifest_row.json` — optional row writer output (if manifest action is used)
-
-## If you get model-not-found
-
-- Verify the model IDs exposed by your endpoint:
-  - `curl http://localhost:8000/v1/models`
-- Use exactly one of the returned model IDs in your task configuration (example task uses `gpt-oss-20b`).
-- If the endpoint exposes a different serve name, start vLLM with:
-  - `--served-model-name gpt-oss-20b`
-
-## Example structure summary
-
-- Proposal schema: `examples/rename_file_proposal/schemas.py`
-- Example task definitions: `examples/rename_file_proposal/task.py`
-- Templates:
-  - `examples/rename_file_proposal/prompts/rename_file_proposal.md`
-  - `examples/rename_file_proposal/prompts/rename_file_review.md`
+`tests/fixtures/rename_inputs/*.txt` contains synthetic, non-sensitive material for local runs.
 
 ## Notes
 
-The review task is intentionally small:
-- input uses original text + serialized first-pass output in metadata
-- output is `{decision: pass|fail|uncertain, notes, recommended_adjustments}`
+This repository intentionally does not bundle real corpus data or private task iterations.
+Those should live in a private task/corpus repo.
 
-This first iteration keeps behavior explicit and avoids framework-heavy patterns so new tasks can be added by editing task definitions only.
-
-## Troubleshooting local endpoints
-
-- If the response parser never captures fields, lower temperature and ensure the endpoint is returning clean JSON.
-- If the endpoint logs warnings about unsupported request fields, confirm `response_format` is not sent to `/v1/responses` and that the model is returning text that parses as JSON.
-- If runs fail with request errors, inspect `provider_request.json` and `raw_response.json` for URL mismatches (`/v1/responses` vs `/responses`), headers, and payload shape.
-- If runs return `validation_failed` on every file, inspect `validation_report.json` to see whether the issue is provider parse failure, schema mismatch, or task validators.
-
-## Concurrency notes
-
-Run directory batches with bounded concurrency:
-
-```bash
-python -m examples.run_rename_proposal batch /path/to/files --max-concurrency 4
-python -m examples.run_rename_proposal batch /path/to/files --max-concurrency 8 --review --review-max-concurrency 4
-```
-
-Start with `2` or `4`, then increase cautiously and monitor local endpoint stability.
-
-## Performance Notes (sample200, March 15 2026)
-
-Observed one pass on a 200-file live corpus:
-
-- Baseline `sample200_run1`: long tail persisted in review with max concurrent review of `1`.
-- Tuned `sample200_run2`: `--max-concurrency 8 --review --review-max-concurrency 8 --provider-timeout 30`.
-
-### Comparison (`sample200_run1` vs `sample200_run2` vs `sample200_run3`)
-
-| Metric | `sample200_run1` | `sample200_run2` | `sample200_run3` |
-| --- | ---: | ---: | ---: |
-| wall-clock (manifest span) | `00:15:55` | `00:07:24` | `00:07:12` |
-| wall-clock (`/usr/bin/time real`) | `~16:00` | `7m30.65s` | `7m19.49s` |
-| proposal rows | 200 | 200 | 200 |
-| proposal success | 197 | 194 | 199 |
-| proposal provider_error | 3 | 6 | 1 |
-| review rows | 197 | 194 | 199 |
-| review success | 196 | 194 | 198 |
-| review provider_error | 1 | 0 | 1 |
-| estimated timeout-like errors (`provider_error` containing `timeout`) | 3 proposal / 1 review | 6 proposal / 0 review | 1 proposal / 1 review |
-| quality (`review` decision) | pass 171, fail 24, uncertain 1, no decision 1 | pass 170, fail 23, uncertain 1 | pass 179, fail 19, no decision 1 |
-
-Net effect:
-- review tail stayed dominated by long but bounded per-item review latency, not serialized queueing.
-- end-to-end wall-clock changed from `7m24s` to `7m19s` (`sample200_run2 -> sample200_run3`).
-- counts/quality broadly stable with actor-attribution still the largest remaining fail mode, improved from 23→19 fails.
-
-### `sample50` follow-up (task-quality refinements)
-
-| Metric | `sample50_run_quality` | `sample50_run4` |
-| --- | ---: | ---: |
-| wall-clock (manifest span) | `1m36.8s` | `1m41.8s` |
-| proposal success | 49 | 49 |
-| proposal provider_error | 1 | 1 |
-| review success | 49 | 48 |
-| review provider_error | 0 | 1 |
-| review decision outcome | pass 45, fail 4 | pass 44, fail 4 |
-
-Observations:
-- pass/fail counts were stable for task-level quality work; actor error list changed, with no uncertain decisions introduced.
-
-
-### Hygiene for future benchmark runs
-
-- Keep output roots fresh per run (`.respkit_runs/live_corpus_01/sample200_runX`).
-- Capture both `batch_summary.json` and `manifest.jsonl` before comparing results.
-- Prefer `--review-max-concurrency` > `1` with the same artifact behavior to verify serialized tails are removed.
-- Capture provider timeout rate separately from review failure rate (`provider_error` strings containing `timeout`).
-- Record a small review decision breakdown (`pass` / `fail` / `uncertain`) from manifest rows.

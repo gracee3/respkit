@@ -1,4 +1,4 @@
-"""Schemas for the example tasks."""
+"""Schemas for the synthetic public demo rename task."""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-class RenameProposalOutput(BaseModel):
-    """Structured output for proposal task."""
+class DemoRenameProposalOutput(BaseModel):
+    """Structured output for the demo proposal task."""
 
-    kind: Literal["legal", "billing", "correspondence", "notes", "other"]
+    kind: Literal["correspondence", "invoice", "note", "legal", "other"]
     actor: str
     slug: str
     confidence: float = Field(ge=0.0, le=1.0)
@@ -19,8 +19,8 @@ class RenameProposalOutput(BaseModel):
     evidence_page: int | None = None
 
 
-class RenameReviewOutput(BaseModel):
-    """Structured output for review task."""
+class DemoRenameReviewOutput(BaseModel):
+    """Structured output for the optional demo review pass."""
 
     decision: Literal["pass", "fail", "uncertain"]
     notes: str

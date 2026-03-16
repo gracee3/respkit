@@ -16,20 +16,6 @@ cd respkit
 python3 -m pip install -e .[dev]
 ```
 
-## Release maintenance
-
-To keep repository metadata in GitHub aligned with release intent:
-
-```bash
-GITHUB_TOKEN=... ./scripts/set_github_repo_metadata.sh
-```
-
-Defaults:
-
-- repository: `gracee3/respkit`
-- description: `Minimal reusable SDK for structured LLM tasks over normalized text input.`
-- topics: `llm`, `sdk`, `structured-output`, `batch-processing`, `openai-compatible`, `manifest`
-
 ## Quick Start
 
 ```python

@@ -141,7 +141,7 @@ def show_final_rows(store: LedgerStore, task_name: str) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run generic ledger abstraction example")
     parser.add_argument("--repo", default=".ledger_demo_repo", type=Path)
-    parser.add_argument("--ledger", default=".ledger_demo.jsonl", type=Path)
+    parser.add_argument("--ledger", default=".ledger_demo.sqlite", type=Path)
     return parser.parse_args()
 
 

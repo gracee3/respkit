@@ -35,6 +35,7 @@ dev = [
 
 [project.scripts]
 respkit-demo = "examples.demo_rename_proposal.__main__:main"
+respkit-ledger = "respkit.ledger.cli:main"
 
 [tool.setuptools]
 include-package-data = true

@@ -1,9 +1,23 @@
+"""Tests for ledger/store/resolver behavior."""
+
 from __future__ import annotations
 
+import csv
+import json
 import subprocess
 from pathlib import Path
+from typing import Any
 
-from respkit.ledger import ApplyPolicy, HumanDecision, LedgerQuery, LedgerStore, LedgerRow, MachineStatus
+from respkit.ledger import (
+    DefaultResolverHooks,
+    HumanDecision,
+    ApplyPolicy,
+    LedgerQuery,
+    LedgerResolver,
+    LedgerRow,
+    LedgerStore,
+    MachineStatus,
+)
 from respkit.ledger.git import get_head_commit
 
 
@@ -12,33 +26,41 @@ def _init_git_repo(repo_root: Path) -> str:
     subprocess.run(["git", "-C", str(repo_root), "init"], check=True)
     subprocess.run(["git", "-C", str(repo_root), "config", "user.email", "ledger@example.com"], check=True)
     subprocess.run(["git", "-C", str(repo_root), "config", "user.name", "Ledger Test"], check=True)
-
     seed = repo_root / "seed.txt"
     seed.write_text("seed", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo_root), "add", "seed.txt"], check=True)
     subprocess.run(["git", "-C", str(repo_root), "commit", "-m", "init"], check=True)
-
     commit = get_head_commit(repo_root)
-    assert commit
+    assert commit is not None
     return commit
 
 
-def _build_store(tmp_path: Path) -> tuple[LedgerStore, str]:
-    return LedgerStore(tmp_path / "ledger.jsonl"), "generic-task"
+def _scripted_input(values: list[str]):
+    items = iter(values)
+
+    def _next(prompt: str) -> str:
+        try:
+            return next(items)
+        except StopIteration:
+            return "s"
+
+    return _next
 
 
-def test_row_creation_and_status_transitions(tmp_path):
-    store, task_name = _build_store(tmp_path)
+def test_row_creation_and_status_transitions(tmp_path: Path) -> None:
+    store = LedgerStore(tmp_path / "ledger.sqlite")
+    task_name = "generic-task"
 
     proposal = store.record_proposal(
         task_name=task_name,
         item_id="doc-1",
         item_locator="docs/doc-1.txt",
-        proposal_payload={"action": "rename"},
+        proposal_payload={"action": "noop"},
         proposal_result={"ok": True},
     )
     assert proposal.machine_status == MachineStatus.PROPOSED
     assert proposal.human_status == HumanDecision.NEEDS_REVIEW
+    assert proposal.version == 1
 
     reviewed = store.record_review(
         task_name=task_name,
@@ -46,83 +68,37 @@ def test_row_creation_and_status_transitions(tmp_path):
         review_payload={"notes": "looks_ok"},
         review_result={"score": 0.9},
     )
+    assert reviewed.version == 2
     assert reviewed.machine_status == MachineStatus.REVIEWED
 
     approved = store.record_human_decision(
         task_name=task_name,
         item_id="doc-1",
         decision=HumanDecision.APPROVED,
-        decision_payload={"reviewer": "alice"},
     )
+    assert approved.version == 3
     assert approved.machine_status == MachineStatus.APPLY_READY
     assert approved.human_status == HumanDecision.APPROVED
 
-    applied = store.record_apply(
-        task_name=task_name,
-        item_id="doc-1",
-        apply_payload={"operation": "noop"},
-        apply_result={"applied": True},
-        success=True,
-    )
+    applied = store.record_apply(task_name=task_name, item_id="doc-1", apply_payload={"operation": "noop"}, apply_result={"applied": True})
+    assert applied.version == 4
     assert applied.machine_status == MachineStatus.APPLIED
-    assert applied.apply_payload == {"operation": "noop"}
 
 
-def test_selective_rerun_filters(tmp_path):
-    store, task_name = _build_store(tmp_path)
+def test_selective_rerun_filters(tmp_path: Path) -> None:
+    store = LedgerStore(tmp_path / "ledger.sqlite")
+    task_name = "generic-task"
 
-    store.record_proposal(
-        task_name=task_name,
-        item_id="resolved",
-        proposal_payload={"action": "noop"},
-        proposal_result={"ok": True},
-    )
-    store.record_human_decision(
-        task_name=task_name,
-        item_id="resolved",
-        decision=HumanDecision.APPROVED,
-    )
-    store.record_apply(
-        task_name=task_name,
-        item_id="resolved",
-        apply_payload={"noop": True},
-        apply_result={"applied": True},
-        success=True,
-    )
+    store.record_proposal(task_name=task_name, item_id="resolved", proposal_payload={"action": "noop"}, proposal_result={"ok": True})
+    store.record_human_decision(task_name=task_name, item_id="resolved", decision=HumanDecision.APPROVED)
+    store.record_apply(task_name=task_name, item_id="resolved", apply_payload={"noop": True}, apply_result={"applied": True}, success=True)
 
-    store.record_proposal(
-        task_name=task_name,
-        item_id="needs-review",
-        proposal_payload={"action": "review"},
-        proposal_result={"ok": True},
-    )
+    store.record_proposal(task_name=task_name, item_id="needs-review", proposal_payload={"action": "review"}, proposal_result={"ok": True})
+    store.record_proposal(task_name=task_name, item_id="provider-error", proposal_payload={"action": "fail"}, proposal_result={"ok": False}, machine_status=MachineStatus.PROVIDER_ERROR)
+    store.record_proposal(task_name=task_name, item_id="rejected", proposal_payload={"action": "reject"}, proposal_result={"ok": True})
+    store.record_human_decision(task_name=task_name, item_id="rejected", decision=HumanDecision.REJECTED)
 
-    store.record_proposal(
-        task_name=task_name,
-        item_id="provider-error",
-        proposal_payload={"action": "fail"},
-        proposal_result={"ok": False},
-        machine_status=MachineStatus.PROVIDER_ERROR,
-    )
-
-    store.record_proposal(
-        task_name=task_name,
-        item_id="rejected",
-        proposal_payload={"action": "reject"},
-        proposal_result={"ok": True},
-    )
-    store.record_human_decision(
-        task_name=task_name,
-        item_id="rejected",
-        decision=HumanDecision.REJECTED,
-    )
-
-    store.record_proposal(
-        task_name=task_name,
-        item_id="old",
-        proposal_payload={"action": "stale"},
-        proposal_result={"ok": True},
-    )
+    store.record_proposal(task_name=task_name, item_id="old", proposal_payload={"action": "stale"}, proposal_result={"ok": True})
     store.mark_superseded(task_name=task_name, item_id="old")
 
     assert {row.item_id for row in store.query_rows(LedgerQuery(task_name=task_name, unresolved_only=True))} == {
@@ -143,9 +119,20 @@ def test_selective_rerun_filters(tmp_path):
     assert any(row.item_id == "old" for row in store.query_rows(LedgerQuery(task_name=task_name, include_superseded=True)))
 
 
-def test_provenance_fields_round_trip(tmp_path):
-    ledger_path = tmp_path / "ledger.jsonl"
-    store = LedgerStore(ledger_path)
+def test_sticky_approved_rows_defaulted_from_resolver_query(tmp_path: Path) -> None:
+    store = LedgerStore(tmp_path / "ledger.sqlite")
+    task_name = "generic-task"
+
+    store.record_proposal(task_name=task_name, item_id="approved-item", proposal_payload={"action": "noop"}, proposal_result={"ok": True})
+    store.record_human_decision(task_name=task_name, item_id="approved-item", decision=HumanDecision.APPROVED)
+    store.record_proposal(task_name=task_name, item_id="needs-review", proposal_payload={"action": "revise"}, proposal_result={"ok": True})
+
+    unresolved = store.query_rows(LedgerQuery(task_name=task_name, unresolved_only=True, include_approved=False))
+    assert {row.item_id for row in unresolved} == {"needs-review"}
+
+
+def test_provenance_fields_round_trip(tmp_path: Path) -> None:
+    store = LedgerStore(tmp_path / "ledger.sqlite")
     task_name = "provenance-task"
 
     store.record_proposal(
@@ -154,7 +141,6 @@ def test_provenance_fields_round_trip(tmp_path):
         proposal_payload={"proposal": True},
         proposal_run_id="proposal-run",
         proposal_code_commit="1234567",
-        extras={"source": "pipeline"},
         proposal_result={"ok": True},
     )
     store.record_review(
@@ -170,6 +156,8 @@ def test_provenance_fields_round_trip(tmp_path):
         item_id="doc",
         decision=HumanDecision.APPROVED,
         decision_code_commit="3456789",
+        decision_payload={"reviewer": "alice"},
+        notes="approved by script",
     )
     store.record_apply(
         task_name=task_name,
@@ -180,7 +168,7 @@ def test_provenance_fields_round_trip(tmp_path):
         success=True,
     )
 
-    reloaded = LedgerStore(ledger_path).get_row(task_name, "doc")
+    reloaded = LedgerStore(tmp_path / "ledger.sqlite").get_row(task_name, "doc")
     assert reloaded is not None
     assert reloaded.proposal_code_commit == "1234567"
     assert reloaded.review_code_commit == "2345678"
@@ -189,13 +177,16 @@ def test_provenance_fields_round_trip(tmp_path):
     assert reloaded.applied_in_commit == "5678901"
     assert reloaded.proposal_run_id == "proposal-run"
     assert reloaded.review_run_id == "review-run"
+    assert reloaded.human_decision_payload == {"reviewer": "alice"}
+    assert reloaded.human_notes == "approved by script"
 
 
-def test_clean_git_guard_blocks_non_dry_run_apply(tmp_path):
+def test_clean_git_guard_blocks_non_dry_run_apply(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     base_commit = _init_git_repo(repo)
 
-    store, task_name = _build_store(tmp_path)
+    store = LedgerStore(tmp_path / "ledger.sqlite")
+    task_name = "generic-task"
     item_id = "repo-item"
     store.record_proposal(
         task_name=task_name,
@@ -204,36 +195,25 @@ def test_clean_git_guard_blocks_non_dry_run_apply(tmp_path):
         proposal_payload={"action": "write"},
         proposal_result={"ok": True},
     )
-    store.record_human_decision(
-        task_name=task_name,
-        item_id=item_id,
-        decision=HumanDecision.APPROVED,
-        decision_payload={"decision": "go"},
-    )
+    store.record_human_decision(task_name=task_name, item_id=item_id, decision=HumanDecision.APPROVED)
 
     (repo / "seed.txt").write_text("dirty", encoding="utf-8")
     calls: list[str] = []
 
-    def _callback(_row: LedgerRow, _dry_run: bool) -> tuple[dict[str, object], dict[str, object]]:
+    def callback(_row, _dry_run: bool) -> tuple[dict[str, object], dict[str, object]]:
         calls.append("called")
         return ({"file": "seed.txt"}, {"updated": True})
 
     results = store.run_apply(
         query=LedgerQuery(task_name=task_name, item_ids=[item_id]),
-        callback=_callback,
+        callback=callback,
         dry_run=False,
-        policy=ApplyPolicy(
-            require_clean_working_tree=True,
-            working_directory=repo,
-            capture_apply_code_commit=False,
-            capture_applied_in_commit=False,
-        ),
+        policy=ApplyPolicy(require_clean_working_tree=True, working_directory=repo, capture_apply_code_commit=False, capture_applied_in_commit=False),
     )
 
     assert calls == []
     assert results[0].success is False
     assert "working tree has uncommitted changes" in (results[0].message or "")
-
     locked_row = store.get_row(task_name, item_id)
     assert locked_row is not None
     assert locked_row.machine_status == MachineStatus.PROVIDER_ERROR
@@ -241,14 +221,9 @@ def test_clean_git_guard_blocks_non_dry_run_apply(tmp_path):
     subprocess.run(["git", "-C", str(repo), "checkout", "--", "seed.txt"], check=True)
     results = store.run_apply(
         query=LedgerQuery(task_name=task_name, item_ids=[item_id]),
-        callback=_callback,
+        callback=callback,
         dry_run=False,
-        policy=ApplyPolicy(
-            require_clean_working_tree=True,
-            working_directory=repo,
-            capture_apply_code_commit=True,
-            capture_applied_in_commit=False,
-        ),
+        policy=ApplyPolicy(require_clean_working_tree=True, working_directory=repo, capture_apply_code_commit=True, capture_applied_in_commit=False),
     )
 
     assert calls == ["called"]
@@ -259,11 +234,12 @@ def test_clean_git_guard_blocks_non_dry_run_apply(tmp_path):
     assert applied_row.apply_code_commit == base_commit
 
 
-def test_apply_callback_and_ledger_update(tmp_path):
+def test_apply_callback_and_ledger_update(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_git_repo(repo)
 
-    store, task_name = _build_store(tmp_path)
+    store = LedgerStore(tmp_path / "ledger.sqlite")
+    task_name = "generic-task"
     item_id = "callback-item"
     store.record_proposal(
         task_name=task_name,
@@ -272,37 +248,28 @@ def test_apply_callback_and_ledger_update(tmp_path):
         proposal_payload={"action": "write"},
         proposal_result={"ok": True},
     )
-    store.record_human_decision(
-        task_name=task_name,
-        item_id=item_id,
-        decision=HumanDecision.APPROVED,
-        decision_payload={"decision": "go"},
-    )
+    store.record_human_decision(task_name=task_name, item_id=item_id, decision=HumanDecision.APPROVED)
 
-    def _callback(_row: LedgerRow, _dry_run: bool) -> dict[str, object]:
-        return {
-            "apply_payload": {"target": "seed.txt"},
-            "apply_result": {"status": "ok"},
-            "success": True,
-        }
+    def callback(_row, _dry_run: bool) -> dict[str, object]:
+        return {"apply_payload": {"target": "seed.txt"}, "apply_result": {"status": "ok"}, "success": True}  # type: ignore[return-value]
 
     results = store.run_apply(
         query=LedgerQuery(task_name=task_name, item_ids=[item_id]),
-        callback=_callback,
+        callback=callback,
         dry_run=False,
         policy=ApplyPolicy(working_directory=repo, capture_apply_code_commit=False),
     )
 
     assert results[0].success
-    assert results[0].apply_payload == {"target": "seed.txt"}
     refreshed = store.get_row(task_name, item_id)
     assert refreshed is not None
     assert refreshed.apply_payload == {"target": "seed.txt"}
     assert refreshed.apply_result == {"status": "ok"}
 
 
-def test_extras_round_trip(tmp_path):
-    store, task_name = _build_store(tmp_path)
+def test_extras_round_trip(tmp_path: Path) -> None:
+    store = LedgerStore(tmp_path / "ledger.sqlite")
+    task_name = "generic-task"
     extras = {"team": "engineering", "tags": ["generic", "ledger"], "priority": 2}
 
     store.record_proposal(
@@ -314,7 +281,192 @@ def test_extras_round_trip(tmp_path):
     )
 
     assert store.get_row(task_name, "item-extra").extras == extras
-
-    reloaded = LedgerStore(tmp_path / "ledger.jsonl").get_row(task_name, "item-extra")
+    reloaded = LedgerStore(tmp_path / "ledger.sqlite").get_row(task_name, "item-extra")
     assert reloaded is not None
     assert reloaded.extras == extras
+
+
+def test_history_versions_are_preserved(tmp_path: Path) -> None:
+    store = LedgerStore(tmp_path / "ledger.sqlite")
+    task_name = "history-task"
+
+    store.record_proposal(task_name=task_name, item_id="a", proposal_payload={"step": "1"})
+    store.record_review(task_name=task_name, item_id="a", review_payload={"step": "2"})
+    store.record_human_decision(task_name=task_name, item_id="a", decision=HumanDecision.REJECTED)
+
+    versions = store.get_row_history(task_name, "a")
+    assert len(versions) == 3
+    assert versions[0].version == 1
+    assert versions[1].version == 2
+    assert versions[2].version == 3
+    assert versions[0].machine_status == MachineStatus.PROPOSED
+    assert versions[2].human_status == HumanDecision.REJECTED
+
+
+def test_concurrent_write_transactions(tmp_path: Path) -> None:
+    store = LedgerStore(tmp_path / "ledger.sqlite")
+    task_name = "concurrency-task"
+
+    import threading
+
+    def update_worker(index: int) -> None:
+        store.record_proposal(
+            task_name=task_name,
+            item_id="same-item",
+            proposal_payload={"worker": index},
+            proposal_result={"ok": True},
+        )
+
+    threads = [threading.Thread(target=update_worker, args=(i,)) for i in range(1, 8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    row = store.get_row(task_name, "same-item")
+    assert row is not None
+    assert row.version == 7
+    history = store.get_row_history(task_name, "same-item")
+    assert len(history) == 7
+
+
+def test_export_helpers(tmp_path: Path) -> None:
+    store = LedgerStore(tmp_path / "ledger.sqlite")
+    task_name = "export-task"
+
+    store.record_proposal(task_name=task_name, item_id="item-1", proposal_payload={"op": "a"}, proposal_result={"ok": True})
+    store.record_proposal(task_name=task_name, item_id="item-2", proposal_payload={"op": "b"}, proposal_result={"ok": True})
+    store.record_human_decision(task_name=task_name, item_id="item-2", decision=HumanDecision.REJECTED)
+
+    csv_path = tmp_path / "rows.csv"
+    jsonl_path = tmp_path / "rows.jsonl"
+    md_path = tmp_path / "rows.md"
+    store.export_csv(csv_path)
+    store.export_jsonl(jsonl_path)
+    store.export_markdown(md_path, query=LedgerQuery(task_name=task_name, unresolved_only=True))
+
+    with csv_path.open("r", encoding="utf-8") as fp:
+        rows = list(csv.DictReader(fp))
+    assert len(rows) == 2
+    assert {row["item_id"] for row in rows} == {"item-1", "item-2"}
+
+    json_rows = [json.loads(line) for line in jsonl_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(json_rows) == 2
+    assert json_rows[0]["task_name"] == task_name
+
+    md_text = md_path.read_text(encoding="utf-8")
+    assert "item-1" in md_text
+    assert "item-2" in md_text
+
+
+def test_import_jsonl_to_sqlite(tmp_path: Path) -> None:
+    jsonl_path = tmp_path / "legacy.jsonl"
+    task_name = "legacy-task"
+    legacy_rows = [
+        LedgerRow(
+            task_name=task_name,
+            item_id="a",
+            machine_status=MachineStatus.PROPOSED,
+            human_status=HumanDecision.NEEDS_REVIEW,
+            proposal_payload={"legacy": 1},
+        ).to_dict(),
+        LedgerRow(
+            task_name=task_name,
+            item_id="a",
+            machine_status=MachineStatus.REVIEWED,
+            human_status=HumanDecision.NEEDS_REVIEW,
+            review_payload={"legacy": 2},
+        ).to_dict(),
+        LedgerRow(
+            task_name=task_name,
+            item_id="b",
+            machine_status=MachineStatus.REVIEWED,
+            human_status=HumanDecision.NEEDS_REVIEW,
+            review_payload={"legacy": 3},
+        ).to_dict(),
+    ]
+    with jsonl_path.open("w", encoding="utf-8") as fp:
+        for row in legacy_rows:
+            fp.write(json.dumps(row) + "\n")
+
+    store = LedgerStore(tmp_path / "imported.sqlite")
+    imported = store.import_jsonl(jsonl_path)
+    assert imported == 3
+
+    current = store.get_row(task_name, "a")
+    assert current is not None
+    assert current.version == 2
+    assert current.review_payload == {"legacy": 2}
+    assert store.get_row(task_name, "b") is not None
+
+    history = store.get_row_history(task_name, "a")
+    assert len(history) == 2
+    assert history[0].version == 1
+    assert history[1].version == 2
+
+
+class _ToyHooks(DefaultResolverHooks):
+    def prompt_edit(self, row: LedgerRow, input_fn) -> dict[str, Any]:
+        text = input_fn("  approval_output_json: ").strip()
+        if not text:
+            return {}
+        return json.loads(text)
+
+
+def test_resolver_loop_and_hooks(tmp_path: Path) -> None:
+    store = LedgerStore(tmp_path / "ledger.sqlite")
+    task_name = "resolver-task"
+
+    store.record_proposal(
+        task_name=task_name,
+        item_id="i1",
+        proposal_payload={"plan": "one"},
+        proposal_result={"ok": True},
+    )
+    store.record_review(task_name=task_name, item_id="i1", review_payload={"risk": "low"}, review_result={"ok": True})
+    store.record_proposal(
+        task_name=task_name,
+        item_id="i2",
+        proposal_payload={"plan": "two"},
+        proposal_result={"ok": True},
+    )
+    store.record_review(task_name=task_name, item_id="i2", review_payload={"risk": "low"}, review_result={"ok": True})
+
+    scripted = _scripted_input(["e", "{\"approved\": true}", "keep-first", "r", "not enough context"])
+    resolver = LedgerResolver(
+        store=store,
+        hooks=_ToyHooks(),
+        input_fn=scripted,
+        output_fn=lambda _message: None,
+    )
+    results = resolver.resolve(query=LedgerQuery(task_name=task_name, unresolved_only=True, include_approved=False))
+    assert [r.item_id for r in results if r.status == "saved"] == ["i1", "i2"]
+
+    row = store.get_row(task_name, "i1")
+    assert row is not None
+    assert row.human_status == HumanDecision.APPROVED
+    assert row.human_decision_payload == {"edits": {"approved": True}, "approved_output": {"edits": {"approved": True}}}
+
+    row2 = store.get_row(task_name, "i2")
+    assert row2 is not None
+    assert row2.human_status == HumanDecision.REJECTED
+
+
+def test_resolver_dry_run_does_not_persist(tmp_path: Path) -> None:
+    store = LedgerStore(tmp_path / "ledger.sqlite")
+    task_name = "resolver-task"
+    store.record_proposal(task_name=task_name, item_id="i1", proposal_payload={"plan": "one"}, proposal_result={"ok": True})
+    store.record_review(task_name=task_name, item_id="i1", review_payload={"risk": "low"}, review_result={"ok": True})
+
+    scripted = _scripted_input(["a", "quick note"])
+    resolver = LedgerResolver(
+        store=store,
+        hooks=DefaultResolverHooks(),
+        input_fn=scripted,
+        output_fn=lambda _message: None,
+    )
+    resolver.resolve(query=LedgerQuery(task_name=task_name, unresolved_only=True), dry_run=True)
+
+    row = store.get_row(task_name, "i1")
+    assert row is not None
+    assert row.human_status == HumanDecision.NEEDS_REVIEW

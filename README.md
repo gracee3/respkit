@@ -192,45 +192,52 @@ The run metadata includes provider timing, status, and chosen model.
 
 ## Ledger API (SDK)
 
-`respkit` also ships a generic corpus adjudication ledger for tasks that iterate over many items and need proposal/review/human/apply coordination.
+`respkit` ships a task-agnostic adjudication ledger for tasks that iterate over many items and need proposal/review/human/apply coordination.
 
 - module: `respkit.ledger`
-- storage: JSONL append-only (`LedgerStore`)
+- canonical storage: **SQLite** (`LedgerStore`)
 - machine/human state is split:
   - machine: `not_run`, `proposed`, `reviewed`, `provider_error`, `apply_ready`, `applied`, `superseded`
   - human: `needs_review`, `approved`, `rejected`
-- optional task-specific payloads stored in `extras: dict[str, Any]`
-- optional apply hooks with optional clean-tree guard
-- per-stage provenance and run identifiers
-- `applied_in_commit` is separate from `apply_code_commit`:
-  - `apply_code_commit`: code hash when apply handler is invoked
-  - `applied_in_commit`: commit hash where resulting filesystem changes are captured, if available
+- task payloads are stored in JSON columns (`proposal_payload`, `review_payload`, `apply_payload`, `human_decision_payload`) plus `extras`
+- per-stage provenance and run identifiers are captured
+- optional apply hooks with optional clean-tree guard are supported
+
+SQLite stores a current-state table and an event/history table so stage transitions are auditable and never overwrite history.
+
+`applied_in_commit` is separate from `apply_code_commit`:
+- `apply_code_commit`: code hash at the time apply callback is invoked (or before mutation for non-dry-run apply).
+- `applied_in_commit`: commit that eventually captures mutation output if your workflow commits afterward (optional and often unavailable immediately).
 
 ### Core API
 
-- `LedgerStore(ledger_path)` — create/open a ledger
-- `create_or_update_row(...)` — create or update shared metadata for an item
-- `record_proposal(...)` — write proposal payload/result and status
-- `record_review(...)` — write review payload/result and status
-- `record_human_decision(...)` — write human decision and transition state
-- `record_apply(...)` — write apply payload/result and transition state
-- `mark_superseded(...)` — mark historical rows as superseded
-- `query_rows(LedgerQuery(...))` — select rows for review/retry/apply planning
-- `run_apply(...)` — execute optional apply callback with dry-run and clean-tree policy options
-- `export_csv(path, query=...)` — produce human-review friendly CSV
+- `LedgerStore(ledger_path)` — create/open a SQLite ledger
+- `create_or_update_row(...)`
+- `record_proposal(...)`
+- `record_review(...)`
+- `record_human_decision(...)`
+- `record_apply(...)`
+- `mark_superseded(...)`
+- `query_rows(LedgerQuery(...))`
+- `run_apply(...)`
+- exports:
+  - `export_csv(path, query=...)`
+  - `export_jsonl(path, query=...)`
+  - `export_markdown(path, query=...)`
+- `import_jsonl(source_jsonl)` for one-time migration to SQLite
 
 ### Query examples
 
-- unresolved only: `LedgerQuery(task_name=task_name, unresolved_only=True)`
-- provider errors only: `LedgerQuery(provider_error_only=True)`
-- rejected only: `LedgerQuery(rejected_only=True)`
-- not approved only: `LedgerQuery(not_approved_only=True)`
-- only unresolved & rerun eligible: `LedgerQuery(unresolved_only=True, rerun_eligible_only=True)`
+- `LedgerQuery(task_name=task_name, unresolved_only=True)`
+- `LedgerQuery(task_name=task_name, provider_error_only=True)`
+- `LedgerQuery(task_name=task_name, rejected_only=True)`
+- `LedgerQuery(task_name=task_name, not_approved_only=True)`
+- `LedgerQuery(task_name=task_name, unresolved_only=True, rerun_eligible_only=True)`
 - include/exclude controls:
   - `LedgerQuery(include_approved=False)`
   - `LedgerQuery(include_superseded=True)`
 
-Minimal example:
+### Generic usage
 
 ```python
 from pathlib import Path
@@ -240,40 +247,31 @@ from respkit.ledger import (
     HumanDecision,
     LedgerQuery,
     LedgerStore,
-    MachineStatus,
 )
 
-ledger = LedgerStore(Path(".my_ledger.jsonl"))
+ledger = LedgerStore(Path(".my_ledger.sqlite"))
 task_name = "generic-corpus-task"
 
-row = ledger.record_proposal(
+ledger.record_proposal(
     task_name=task_name,
     item_id="item-001",
     item_locator="docs/file-a.txt",
     proposal_payload={"op": "normalize_section_headers"},
     proposal_result={"status": "ok"},
 )
-
-row = ledger.record_review(
+ledger.record_review(
     task_name=task_name,
     item_id="item-001",
     review_payload={"risk": "low"},
     review_result={"accept": True},
 )
+ledger.record_human_decision(task_name=task_name, item_id="item-001", decision=HumanDecision.APPROVED)
 
-row = ledger.record_human_decision(
-    task_name=task_name,
-    item_id="item-001",
-    decision=HumanDecision.APPROVED,
-)
+ready = ledger.query_rows(LedgerQuery(task_name=task_name, unresolved_only=True, include_approved=False))
+print([r.item_id for r in ready])
 
-ready = ledger.query_rows(
-    LedgerQuery(task_name=task_name, unresolved_only=True, include_approved=False)
-)
-print([r.item_id for r in ready])  # e.g. ["item-001"]
-
-apply_results = ledger.run_apply(
-    query=LedgerQuery(task_name=task_name, unresolved_only=True),
+ledger.run_apply(
+    query=LedgerQuery(task_name=task_name),
     callback=lambda _row, dry_run: (
         {"op": "apply"} if dry_run else {"op": "apply"},
         {"status": "ok"},
@@ -281,45 +279,62 @@ apply_results = ledger.run_apply(
     dry_run=True,
 )
 
-# Example of guarded non-dry-run apply (will require clean working tree when enabled)
 ledger.run_apply(
-    query=LedgerQuery(task_name=task_name, unresolved_only=True),
+    query=LedgerQuery(task_name=task_name),
     callback=lambda _row, dry_run: ({"op": "apply"}, {"status": "applied"}),
     dry_run=False,
     policy=ApplyPolicy(require_clean_working_tree=True, working_directory=Path(".")),
 )
 ```
 
-Example fields in one row include:
+### Resolver example (interactive + hook extension)
 
-- `task_name`, `item_id`, `item_locator`, `input_fingerprint`, `rerun_eligible`
-- `proposal_payload`/`review_payload`/`apply_payload` and result fields
-- `proposal_run_id`/`review_run_id`/`human_decision_run_id`/`apply_run_id`
-- `proposal_code_commit`/`review_code_commit`/`human_decision_code_commit`/`apply_code_commit`
-- `applied_in_commit` (commit captured after mutation is observed, if enabled)
-- timestamp fields (`created_at`, `updated_at`, stage-specific recorded times)
+The SDK also provides a generic interactive resolver with task-specific hooks:
 
-### Stage-level provenance
+```python
+from pathlib import Path
 
-- commit fields capture the ledger code provenance at the time each stage is recorded:
-  - `proposal_code_commit`
-  - `review_code_commit`
-  - `human_decision_code_commit`
-  - `apply_code_commit`
-- `applied_in_commit` is reserved for capturing the commit that contains code changes resulting from apply output (for example, after your external workflow commits files).
+from respkit.ledger import DefaultResolverHooks, LedgerQuery, LedgerResolver, LedgerStore
+
+
+class MyHooks(DefaultResolverHooks):
+    def risk_flags(self, row):
+        if row.review_payload and isinstance(row.review_payload, dict) and row.review_payload.get("risk") == "high":
+            return ["high risk"]
+        return []
+
+
+ledger = LedgerStore(Path(".my_ledger.sqlite"))
+resolver = LedgerResolver(ledger=ledger, hooks=MyHooks(), input_fn=lambda prompt: "a")
+resolver.resolve(
+    query=LedgerQuery(task_name="generic-corpus-task", unresolved_only=True, include_approved=False),
+    dry_run=True,
+)
+```
+
+### Resolver and Export CLI
+
+Installable script:
+
+```bash
+respkit-ledger resolve --ledger .my_ledger.sqlite --task-name generic-corpus-task --unresolved-only
+respkit-ledger export --ledger .my_ledger.sqlite --task-name generic-corpus-task --format markdown --out review.md
+respkit-ledger import-jsonl --ledger .my_ledger.sqlite --source /tmp/old_ledger.jsonl
+```
 
 ### Demo command
 
-Run the generic ledger demo:
+Run the generic ledger demos:
 
 ```bash
 PYTHONPATH=. python3 examples/demo_ledger.py
+PYTHONPATH=. python3 examples/demo_ledger_resolver.py
 ```
 
 Target explicit paths:
 
 ```bash
-PYTHONPATH=. python3 examples/demo_ledger.py --repo /tmp/corpus_repo --ledger /tmp/corpus_ledger.jsonl
+PYTHONPATH=. python3 examples/demo_ledger.py --repo /tmp/corpus_repo --ledger /tmp/corpus_ledger.sqlite
 ```
 
 ## Local test fixtures

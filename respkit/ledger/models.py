@@ -37,12 +37,14 @@ class LedgerRow:
 
     task_name: str
     item_id: str
+    version: int = 0
     machine_status: MachineStatus = MachineStatus.NOT_RUN
     human_status: HumanDecision = HumanDecision.NEEDS_REVIEW
     rerun_eligible: bool = False
     proposal_payload: Any | None = None
     review_payload: Any | None = None
     apply_payload: Any | None = None
+    human_decision_payload: Any | None = None
     proposal_result: Any | None = None
     review_result: Any | None = None
     apply_result: Any | None = None
@@ -57,6 +59,7 @@ class LedgerRow:
     human_decision_code_commit: str | None = None
     apply_code_commit: str | None = None
     applied_in_commit: str | None = None
+    human_notes: str | None = None
     proposal_recorded_at: datetime | None = None
     review_recorded_at: datetime | None = None
     human_decision_recorded_at: datetime | None = None
@@ -98,10 +101,12 @@ class LedgerRow:
                 "item_id": self.item_id,
                 "machine_status": self.machine_status,
                 "human_status": self.human_status,
+                "version": self.version,
                 "rerun_eligible": self.rerun_eligible,
                 "proposal_payload": self.proposal_payload,
                 "review_payload": self.review_payload,
                 "apply_payload": self.apply_payload,
+                "human_decision_payload": self.human_decision_payload,
                 "proposal_result": self.proposal_result,
                 "review_result": self.review_result,
                 "apply_result": self.apply_result,
@@ -116,6 +121,7 @@ class LedgerRow:
                 "human_decision_code_commit": self.human_decision_code_commit,
                 "apply_code_commit": self.apply_code_commit,
                 "applied_in_commit": self.applied_in_commit,
+                "human_notes": self.human_notes,
                 "proposal_recorded_at": self.proposal_recorded_at,
                 "review_recorded_at": self.review_recorded_at,
                 "human_decision_recorded_at": self.human_decision_recorded_at,
@@ -144,12 +150,14 @@ class LedgerRow:
         return cls(
             task_name=payload["task_name"],
             item_id=payload["item_id"],
+            version=int(payload.get("version", 0) or 0),
             machine_status=MachineStatus(payload.get("machine_status", MachineStatus.NOT_RUN)),
             human_status=HumanDecision(payload.get("human_status", HumanDecision.NEEDS_REVIEW)),
             rerun_eligible=bool(payload.get("rerun_eligible", False)),
             proposal_payload=payload.get("proposal_payload"),
             review_payload=payload.get("review_payload"),
             apply_payload=payload.get("apply_payload"),
+            human_decision_payload=payload.get("human_decision_payload"),
             proposal_result=payload.get("proposal_result"),
             review_result=payload.get("review_result"),
             apply_result=payload.get("apply_result"),
@@ -164,6 +172,7 @@ class LedgerRow:
             human_decision_code_commit=payload.get("human_decision_code_commit"),
             apply_code_commit=payload.get("apply_code_commit"),
             applied_in_commit=payload.get("applied_in_commit"),
+            human_notes=payload.get("human_notes"),
             proposal_recorded_at=cls._parse_datetime(payload.get("proposal_recorded_at")),
             review_recorded_at=cls._parse_datetime(payload.get("review_recorded_at")),
             human_decision_recorded_at=cls._parse_datetime(payload.get("human_decision_recorded_at")),
